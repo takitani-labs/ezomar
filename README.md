@@ -104,18 +104,26 @@ versionados.
 
 ## Aresta conhecida: `.claude/settings.json`
 
-Toda execução depois da primeira vai avisar que esse arquivo divergiu do repo.
-Não é bug do ezomar, é estrutural: ele é versionado no chezmoi, mas o próprio
-Claude Code reescreve ele ao instalar plugin ou marketplace. Os dois disputam o
-mesmo arquivo.
+Esse arquivo é versionado no chezmoi, mas o Claude Code reescreve ele ao
+instalar ou habilitar plugin. Os dois disputam o mesmo arquivo, e ele não
+converge entre máquinas: cada instalação registra os marketplaces de um jeito.
 
-O módulo avisa e segue, de propósito. `--force` resolveria o aviso apagando em
-silêncio o registro de marketplaces do qual o módulo 40 depende, o que é pior
-que o aviso.
+Por isso o módulo 30 usa `--force`. Sem ele o chezmoi para nesse arquivo
+esperando um prompt que uma execução automatizada não responde, e **todo arquivo
+gerenciado depois dele é pulado em silêncio**, com a execução ainda reportando
+sucesso.
 
-A correção de verdade é no repo de dotfiles: separar a configuração durável
-(permissões, hooks, statusline) do estado local de plugins, e versionar só a
-primeira.
+**Não rode `chezmoi apply --force` na mão.** Medido: sobrescrever esse arquivo
+com a versão do repo desabilita os plugins que só o alvo tinha habilitados
+(`✔ enabled` vira `✘ disabled`), e `claude plugin list` continua dizendo
+"installed", então nada parece errado.
+
+O `--force` só é seguro dentro do pipeline, porque o módulo 40 roda logo depois
+e reabilita tudo incondicionalmente. Se for aplicar à mão, rode o módulo 40 em
+seguida.
+
+A correção de verdade seria no repo de dotfiles: separar a configuração durável
+(hooks, statusline) do estado local de plugins, e versionar só a primeira.
 
 ## Contexto
 
