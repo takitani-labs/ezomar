@@ -52,18 +52,17 @@ fi
 
 if [ -d "$HOME/.local/share/chezmoi/.git" ]; then
   echo "[ezomar][chezmoi] Repositório já clonado, atualizando..."
-  # Not fatal, and deliberately not --force. Claude Code rewrites
-  # ~/.claude/settings.json whenever a plugin or marketplace is added, so it
-  # diverges from the repo on every machine that installs plugins. chezmoi then
-  # wants to prompt, and there is no TTY here. Forcing would silently drop the
-  # marketplace registrations that module 40 depends on, so the run reports the
-  # divergence and moves on, leaving the choice to a human.
-  OUT="$($CM update --exclude=scripts 2>&1 || true)"
-  printf '%s\n' "$OUT" | grep -v "could not open a new TTY" || true
-  if printf '%s' "$OUT" | grep -q "has changed since chezmoi last wrote it"; then
-    echo "[ezomar][chezmoi] Aviso: arquivos divergiram do repo e foram mantidos como estão."
-    echo "                  Revise com: chezmoi diff   e resolva com apply ou re-add."
-  fi
+  # --force on purpose. Claude Code rewrites ~/.claude/settings.json whenever a
+  # plugin or marketplace changes, so it diverges on any machine that installs
+  # plugins. Without --force chezmoi stops at that file waiting for a prompt
+  # that an automated run cannot answer, and every managed file after it is
+  # silently skipped: the run reports success and delivers half a machine.
+  #
+  # This is safe here only because of the pipeline: the repo is the source of
+  # truth for a mirror, and module 40 runs right after, reinstalling and
+  # re-enabling every plugin. Local edits worth keeping belong in the repo, not
+  # on the target.
+  $CM update --exclude=scripts --force
 else
   echo "[ezomar][chezmoi] Clonando e aplicando $REPO..."
   $CM init --apply --exclude=scripts "$REPO"

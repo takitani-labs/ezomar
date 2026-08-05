@@ -42,10 +42,17 @@ done
 
 INSTALLED="$(claude plugin list 2>/dev/null || true)"
 for p in "${PLUGINS[@]}"; do
-  if printf '%s' "$INSTALLED" | grep -qF "$p"; then
-    printf '[ezomar][claude-plugins] %-42s já instalado\n' "$p"
-    continue
-  fi
   printf '[ezomar][claude-plugins] %-42s ' "$p"
-  claude plugin install "$p" >/dev/null 2>&1 && echo "ok" || echo "FALHOU"
+  if printf '%s' "$INSTALLED" | grep -qF "$p"; then
+    printf 'instalado, '
+  else
+    claude plugin install "$p" >/dev/null 2>&1 || { echo "FALHA ao instalar"; continue; }
+    printf 'instalado agora, '
+  fi
+  # Enable unconditionally, not just after a fresh install. The plugin files
+  # living on disk and the plugin being enabled are separate facts, recorded in
+  # settings.json, which module 30 restores from the repo. Without this, a
+  # machine that already had the files ends up with them installed and switched
+  # off, and `claude plugin list` still says "installed", so nothing looks wrong.
+  claude plugin enable "$p" >/dev/null 2>&1 && echo "habilitado" || echo "habilitado (ou já estava)"
 done
