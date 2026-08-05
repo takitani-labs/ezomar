@@ -1,7 +1,7 @@
 # Ezomar (Ez Omarchy)
 
 Post-install para **Omarchy** (Arch + Hyprland), no mesmo formato do
-[ezdora](https://github.com/takitani-labs/ezdora): módulos independentes, um por
+ezdora (repositório privado do autor): módulos independentes, um por
 arquivo, idempotentes.
 
 ## Como usar
