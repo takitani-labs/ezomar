@@ -17,7 +17,13 @@ set -euo pipefail
 
 export PATH="$HOME/.local/bin:$PATH"
 
-REPO="${EZOMAR_DOTFILES_REPO:-git@github.com:takitani/dotfiles.git}"
+# shellcheck source=../lib/config.sh
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/config.sh"
+
+ezomar_config_require EZOMAR_DOTFILES_REPO \
+  "Repositório de dotfiles (chezmoi)" \
+  "git@github.com:usuario/dotfiles.git"
+REPO="$EZOMAR_DOTFILES_REPO"
 
 if ! command -v chezmoi >/dev/null 2>&1; then
   echo "[ezomar][chezmoi] Instalando em ~/.local/bin..."

@@ -14,8 +14,10 @@ set -euo pipefail
 
 export PATH="$HOME/.local/bin:$PATH"
 
+# shellcheck source=../lib/config.sh
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib" && pwd)/config.sh"
+
 KEY_FILE="$HOME/.config/age/keys.txt"
-ITEM="${EZOMAR_AGE_ITEM:-Dotfiles age identity (chezmoi)}"
 BW_PROFILE_DIR="${BITWARDENCLI_APPDATA_DIR:-$HOME/.bw-profiles/personal}"
 
 if [ -s "$KEY_FILE" ] && grep -q "AGE-SECRET-KEY-1" "$KEY_FILE"; then
@@ -24,6 +26,11 @@ if [ -s "$KEY_FILE" ] && grep -q "AGE-SECRET-KEY-1" "$KEY_FILE"; then
 fi
 
 command -v bw >/dev/null 2>&1 || { echo "[ezomar][age] bw não encontrado." >&2; exit 1; }
+
+ezomar_config_require EZOMAR_AGE_ITEM \
+  "Nome do item no cofre com a identidade age" \
+  "ex: age identity"
+ITEM="$EZOMAR_AGE_ITEM"
 
 export BITWARDENCLI_APPDATA_DIR="$BW_PROFILE_DIR"
 

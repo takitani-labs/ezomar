@@ -48,11 +48,38 @@ Rodam em ordem de nome, e a numeração importa.
 | `20-age-key.sh` | restaura a identidade age do Bitwarden |
 | `30-chezmoi.sh` | instala o chezmoi e aplica os dotfiles |
 | `40-claude-plugins.sh` | marketplaces e os 10 plugins do Claude Code |
+| `50-personal.sh` | roda seus módulos privados, se houver |
 | `90-verify.sh` | confere o estado final e lista o que falta |
 
 **A ordem entre 20 e 30 é obrigatória.** Sem a chave age, o chezmoi aplica os
 400 arquivos e reporta sucesso, mas tudo que é encriptado fica ilegível. É uma
 máquina quebrada que se parece com uma máquina pronta.
+
+## Configuração, e o que fica fora daqui
+
+Nada pessoal está hard-coded neste repo. Dois valores são necessários, e a
+ordem em que são precisos é o que define onde eles moram:
+
+| Variável | O que é |
+|---|---|
+| `EZOMAR_DOTFILES_REPO` | seu repositório chezmoi |
+| `EZOMAR_AGE_ITEM` | item no cofre com a identidade age que decripta ele |
+
+Esses dois são precisos **antes** do chezmoi rodar, então não podem vir do repo
+privado de dotfiles: é justamente ele que eles destravam. Na primeira execução o
+ezomar pergunta e salva em `~/.config/ezomar/config.sh` (0600). Depois disso,
+não pergunta mais. Também aceita por ambiente:
+
+```bash
+export EZOMAR_DOTFILES_REPO="git@github.com:usuario/dotfiles.git"
+export EZOMAR_AGE_ITEM="Nome do item no seu cofre"
+```
+
+Todo o resto que for seu é preciso **depois** do chezmoi, então pode viajar
+junto com os dotfiles. Ponha em `~/.config/ezomar/apps/*.sh` no seu repo
+privado, e o módulo `50-personal.sh` executa em ordem de nome. Antes do chezmoi
+rodar o diretório não existe e o módulo não faz nada, o que é o comportamento
+correto numa máquina zerada.
 
 ## O que ele não faz
 
@@ -92,5 +119,5 @@ primeira.
 
 ## Contexto
 
-Escrito para o `kage`, a máquina de reserva que espelha o desktop primário. O
-procedimento completo de bootstrap está em `MIRROR.md`, no repo de dotfiles.
+Escrito para uma máquina de reserva que espelha um desktop primário. O
+procedimento completo de bootstrap fica documentado no seu repo de dotfiles.
