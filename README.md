@@ -1,0 +1,96 @@
+# Ezomar (Ez Omarchy)
+
+Post-install para **Omarchy** (Arch + Hyprland), no mesmo formato do
+[ezdora](https://github.com/takitani-labs/ezdora): módulos independentes, um por
+arquivo, idempotentes.
+
+## Como usar
+
+```bash
+# Uma linha
+bash <(curl -fsSL https://raw.githubusercontent.com/takitani-labs/ezomar/master/bootstrap.sh)
+
+# Ou clonado
+git clone https://github.com/takitani-labs/ezomar.git
+cd ezomar && bash install.sh
+```
+
+## Por que ele é tão menor que o ezdora
+
+O ezdora tem 99 módulos porque precisa construir o ambiente inteiro em cima de
+um Fedora KDE pelado. O Omarchy já é um post-install opinado e entrega `claude`,
+`gh`, `op`, `mise`, `git`, `docker` e `python` de fábrica.
+
+Medido numa instalação limpa do Omarchy 3.8.4, faltavam seis coisas. É essa a
+lista aqui, e cada item entrou porque **algo quebrou**, não por precaução:
+
+| Item | O que quebrava sem ele |
+|---|---|
+| `zsh` | shell de login continuava bash, então o `.zshrc` de 591 linhas nunca carregava e `bws`, `ops` e `bw-exec` não existiam |
+| `nodejs` | os hooks em `settings.local.json` chamam `node .../hook.mjs` e são protegidos por `[ ! -f ]`, então falhavam em silêncio |
+| `atuin` | histórico de shell; o `.zshrc` degradava com aviso |
+| `bw` | é de onde vem a chave age, sem ela nada do repo decripta |
+| chave age | `.bashrc`, `.zshrc.local`, `.ssh/config` e os quatro perfis do Claude com token de API |
+| antigen | `.zshrc` fazia `source` dele e morria com "command not found" |
+
+Os dois últimos foram resolvidos no próprio repo de dotfiles (a chave vem do
+cofre, o antigen virou external do chezmoi). Os outros quatro estão aqui.
+
+## Módulos
+
+Rodam em ordem de nome, e a numeração importa.
+
+| Módulo | O que faz |
+|---|---|
+| `00-packages.sh` | o delta de pacotes via pacman |
+| `05-shell.sh` | `chsh` para zsh, e registra em `/etc/shells` |
+| `10-bitwarden-cli.sh` | binário oficial do `bw` em `~/.local/bin`, sem root |
+| `20-age-key.sh` | restaura a identidade age do Bitwarden |
+| `30-chezmoi.sh` | instala o chezmoi e aplica os dotfiles |
+| `40-claude-plugins.sh` | marketplaces e os 10 plugins do Claude Code |
+| `90-verify.sh` | confere o estado final e lista o que falta |
+
+**A ordem entre 20 e 30 é obrigatória.** Sem a chave age, o chezmoi aplica os
+400 arquivos e reporta sucesso, mas tudo que é encriptado fica ilegível. É uma
+máquina quebrada que se parece com uma máquina pronta.
+
+## O que ele não faz
+
+**Login de browser.** `claude`, `ops` e `bws` precisam de você. O `90-verify.sh`
+lista isso no fim.
+
+**A primeira chave SSH.** O repo de dotfiles é privado e as chaves estão dentro
+dele, o que é circular. A primeira tem que vir da máquina primária:
+
+```bash
+scp ~/.ssh/id_rsa ~/.ssh/id_rsa.pub <máquina-nova>:.ssh/
+```
+
+**Os `run_once_after_*` do chezmoi.** São pulados de propósito com
+`--exclude=scripts`: três dependem do 1Password logado e dois chamam
+`sudo pacman`, então travam esperando um TTY que não existe numa execução
+automatizada. Depois de logar nos cofres, rode `chezmoi apply` uma vez.
+
+**Configuração do Claude.** Skills, perfis, `CLAUDE.md` e hooks vêm do chezmoi.
+Só os plugins são reinstalados aqui, porque carregam binário e não fazem sentido
+versionados.
+
+## Aresta conhecida: `.claude/settings.json`
+
+Toda execução depois da primeira vai avisar que esse arquivo divergiu do repo.
+Não é bug do ezomar, é estrutural: ele é versionado no chezmoi, mas o próprio
+Claude Code reescreve ele ao instalar plugin ou marketplace. Os dois disputam o
+mesmo arquivo.
+
+O módulo avisa e segue, de propósito. `--force` resolveria o aviso apagando em
+silêncio o registro de marketplaces do qual o módulo 40 depende, o que é pior
+que o aviso.
+
+A correção de verdade é no repo de dotfiles: separar a configuração durável
+(permissões, hooks, statusline) do estado local de plugins, e versionar só a
+primeira.
+
+## Contexto
+
+Escrito para o `kage`, a máquina de reserva que espelha o desktop primário. O
+procedimento completo de bootstrap está em `MIRROR.md`, no repo de dotfiles.
