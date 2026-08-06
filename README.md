@@ -49,11 +49,31 @@ Rodam em ordem de nome, e a numeração importa.
 | `30-chezmoi.sh` | instala o chezmoi e aplica os dotfiles |
 | `40-claude-plugins.sh` | marketplaces e os 10 plugins do Claude Code |
 | `50-personal.sh` | roda seus módulos privados, se houver |
+| `60-cliproxyapi.sh` | instala a API local para as subscriptions de IA, sua config secreta e unit de usuário |
+| `62-cliproxyapi-exato.sh` | cria a segunda instância do CLIProxyAPI para a conta Codex de trabalho |
+| `64-codex-profiles.sh` | separa as contas do Codex CLI por `CODEX_HOME` e compartilha a configuração |
+| `66-claude-profile-restore.sh` | instala o mapa de sessão para o herdr restaurar cada pane no perfil Claude correto |
+| `68-pidbox.sh` | instala o guard de namespace de PID contra `kill(-1)` de suítes de teste |
+| `70-collie.sh` | instala opcionalmente o plugin Collie, sem publicar o bridge |
 | `90-verify.sh` | confere o estado final e lista o que falta |
 
 **A ordem entre 20 e 30 é obrigatória.** Sem a chave age, o chezmoi aplica os
 400 arquivos e reporta sucesso, mas tudo que é encriptado fica ilegível. É uma
 máquina quebrada que se parece com uma máquina pronta.
+
+### Por que a camada de agentes também mora aqui
+
+Os seis módulos de 60 a 70 seguem o mesmo princípio de só adicionar o que já
+quebrou, não o que talvez quebre. O chezmoi restaura os perfis e snippets, mas
+deliberadamente não consegue entregar units systemd de usuário, binários e
+configs com segredos. Sem esse complemento, as APIs locais não sobem, as contas
+do Codex se misturam, panes restaurados perdem o perfil e testes com `kill(-1)`
+podem derrubar a sessão; o Collie continua um opt-in sem início automático.
+
+A numeração também é uma dependência: todos os seis rodam **depois de
+`30-chezmoi.sh`**, pois operam sobre `~/.claude-profiles`, `~/.config/zsh` e
+`~/.local/bin` restaurados por ele. Por isso ficam depois de `50-personal.sh` e
+antes de `90-verify.sh`.
 
 ## Configuração, e o que fica fora daqui
 

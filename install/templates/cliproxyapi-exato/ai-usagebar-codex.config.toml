@@ -1,0 +1,12 @@
+# ai-usagebar apontado para uma única conta Codex, com um diretório XDG por
+# conta. O caminho da autenticação OpenAI é configuração, não flag, por isso a
+# separação precisa acontecer neste arquivo.
+[ui]
+primary = "openai"
+
+[openai]
+enabled = true
+codex_auth_path = "{{CODEX_AUTH_PATH}}"
+
+[anthropic]
+enabled = false

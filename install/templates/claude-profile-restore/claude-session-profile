@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Mapeia uma sessão do Claude Code para o perfil que a criou.
+#
+#   build   reconstrói o cache a partir do history.jsonl de cada perfil
+#   <uuid>  imprime o perfil dono da sessão, ou vazio quando desconhecido
+
+set -uo pipefail
+
+CACHE="${CLAUDE_SESSION_PROFILE_CACHE:-$HOME/.local/state/claude-session-profile.tsv}"
+
+build() {
+  mkdir -p "$(dirname "$CACHE")"
+  python3 - "$CACHE" <<'PY'
+import glob
+import json
+import os
+import sys
+
+out = sys.argv[1]
+first = {}
+for path in glob.glob(os.path.expanduser("~/.claude-profiles/*/history.jsonl")):
+    profile = path.split("/.claude-profiles/")[1].split("/")[0]
+    try:
+        handle = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    with handle:
+        for line in handle:
+            if '"sessionId"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            session_id = entry.get("sessionId")
+            if not session_id:
+                continue
+            timestamp = entry.get("timestamp") or 0
+            current = first.get(session_id)
+            if current is None or timestamp < current[0]:
+                first[session_id] = (timestamp, profile)
+
+tmp = out + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    for session_id, (_, profile) in first.items():
+        handle.write(f"{session_id}\t{profile}\n")
+os.replace(tmp, out)
+print(f"{len(first)} sessões mapeadas -> {out}", file=sys.stderr)
+PY
+}
+
+lookup() {
+  awk -F'\t' -v s="$1" '$1 == s { print $2; exit }' "$CACHE" 2>/dev/null
+}
+
+case "${1:-}" in
+  build|"")
+    build
+    ;;
+  *)
+    [ -f "$CACHE" ] || build 2>/dev/null
+    result="$(lookup "$1")"
+    if [ -z "$result" ]; then
+      build 2>/dev/null
+      result="$(lookup "$1")"
+    fi
+    printf '%s' "$result"
+    ;;
+esac

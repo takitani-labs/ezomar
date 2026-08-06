@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Executa um comando num namespace de PID próprio para conter kill(-1).
+#
+#   pidbox <cmd> [args...]   executa o comando isolado
+#   pidbox --check           verifica a estrutura do isolamento
+#   pidbox --check-hard      dispara kill(-1) dentro e prova a contenção
+
+set -uo pipefail
+
+die() { printf '%s\n' "pidbox: $*" >&2; exit 125; }
+
+command -v unshare >/dev/null 2>&1 \
+  || die "unshare não encontrado (no Arch, ele é fornecido por util-linux)"
+
+if [ "$(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo 0)" -lt 1 ]; then
+  die "namespaces de usuário sem privilégio estão desabilitados (user.max_user_namespaces=0)"
+fi
+
+NS=(unshare --user --map-current-user --pid --fork --mount-proc --kill-child)
+
+check_structural() {
+  local outer_ns inner
+  outer_ns="$(readlink /proc/self/ns/pid)"
+  inner="$("${NS[@]}" sh -c 'printf "%s %s %s" "$(readlink /proc/self/ns/pid)" "$$" "$(ps -e --no-headers | wc -l)"' 2>/dev/null)" \
+    || { echo "FALHA: não foi possível criar um namespace de PID"; return 1; }
+  local inner_ns inner_pid inner_count
+  read -r inner_ns inner_pid inner_count <<<"$inner"
+
+  echo "  namespace externo: $outer_ns ($(ps -e --no-headers | wc -l) processos visíveis)"
+  echo "  namespace interno: $inner_ns (pid $inner_pid, $inner_count processos visíveis)"
+
+  [ "$inner_ns" != "$outer_ns" ] || { echo "FALHA: mesmo namespace de PID"; return 1; }
+  [ "$inner_pid" = "1" ] || { echo "FALHA: o payload não é pid 1"; return 1; }
+  [ "$inner_count" -lt 10 ] || { echo "FALHA: $inner_count processos ainda estão visíveis"; return 1; }
+  echo "  OK: isolado"
+}
+
+check_hard() {
+  sleep 30 &
+  local sentinel=$!
+  sleep 0.3
+  "${NS[@]}" sh -c 'sleep 30 & v=$!; sleep 0.3; kill -TERM -1 2>/dev/null; sleep 0.3;
+    kill -0 $v 2>/dev/null && echo "  vítima interna: sobreviveu (inesperado)" || echo "  vítima interna: encerrada como esperado"' 2>&1
+  if kill -0 "$sentinel" 2>/dev/null; then
+    echo "  sentinela externa: viva; kill(-1) ficou contido"
+    kill "$sentinel" 2>/dev/null
+    return 0
+  fi
+  echo "  sentinela externa: morreu; kill(-1) escapou"
+  return 1
+}
+
+case "${1:-}" in
+  --check)
+    echo "pidbox: verificando isolamento por namespace de PID"
+    check_structural
+    ;;
+  --check-hard)
+    echo "pidbox: verificando isolamento por namespace de PID"
+    check_structural || exit 1
+    echo "pidbox: disparando kill(-1) dentro da caixa"
+    check_hard
+    ;;
+  ""|-h|--help)
+    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    exec "${NS[@]}" "$@"
+    ;;
+esac
