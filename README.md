@@ -210,6 +210,27 @@ seguida.
 A correção de verdade seria no repo de dotfiles: separar a configuração durável
 (hooks, statusline) do estado local de plugins, e versionar só a primeira.
 
+## Antes de formatar a máquina velha
+
+O `install.sh` responde se a máquina nova ficou pronta. O `preformat.sh` responde
+a pergunta anterior, na máquina que vai ser apagada: tudo que a nova vai precisar
+está capturado? Ele deriva a lista do estado vivo (skills, perfis do Claude,
+units systemd de usuário, configs com chave) e pergunta ao chezmoi o que está no
+source; depois confere que os repos envolvidos (dotfiles, ezomar e o de
+ferramentas) estão commitados e no remoto, porque um source perfeito que só
+existe no disco prestes a ser apagado não vale nada.
+
+```bash
+bash preformat.sh          # relatório, só leitura
+bash preformat.sh --fix    # chezmoi add/re-add do que dá, commit e push do source, e reconfere
+```
+
+Termina com "OK, pode formatar" ou com a lista de pendências. O `--fix` nunca
+toca `~/.claude/settings.json` (o Claude Code reescreve esse arquivo com estado
+de plugin) nem adiciona os drop-ins do oom-guard (o módulo 80 escreve os dele).
+O que ninguém versiona de propósito (transcrições do mrig, `~/.claude.json`,
+sessões do herdr) ele só lista, para você copiar se importar.
+
 ## Contexto
 
 Escrito em 2026-08 para uma máquina de reserva que espelha um desktop primário.
