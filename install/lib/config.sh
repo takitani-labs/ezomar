@@ -48,3 +48,24 @@ ezomar_config_require() {
   printf '%s=%q\n' "$var" "$value" >> "$EZOMAR_CONFIG_FILE"
   echo "[ezomar][config] Salvo em $EZOMAR_CONFIG_FILE"
 }
+
+# Optional: the owner's private tools repo. Some tools are too personal for this
+# repo yet too alive for a vendored copy (a copy is a second source of truth that
+# quietly goes stale, which is the failure this repo keeps finding). Modules 72
+# to 76 install straight from a clone of that repo, and skip when it is unset.
+#
+#   EZOMAR_TOOLS_REPO   git URL, e.g. git@github.com:user/tools.git
+#   EZOMAR_TOOLS_DIR    clone path; default ~/work/repos/<org>/<repo> from the URL
+#
+# The layout those modules expect is tools/<name>/ and scripts/*.sh.
+ezomar_tools_dir() {
+  if [ -n "${EZOMAR_TOOLS_DIR:-}" ]; then
+    printf '%s\n' "$EZOMAR_TOOLS_DIR"
+    return 0
+  fi
+  [ -n "${EZOMAR_TOOLS_REPO:-}" ] || return 1
+  local path="${EZOMAR_TOOLS_REPO%.git}"
+  path="${path##*:}"     # git@host:org/repo   -> org/repo ; https://host/org/repo -> //host/org/repo
+  path="${path#//*/}"    # //host/org/repo     -> org/repo
+  printf '%s/work/repos/%s\n' "$HOME" "$path"
+}

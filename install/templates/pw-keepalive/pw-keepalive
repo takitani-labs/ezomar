@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Password Manager Keepalive Daemon
+# Keeps 1Password and Bitwarden sessions alive by pinging periodically
+
+PIDFILE="$HOME/.pw-keepalive.pid"
+LOGFILE="$HOME/.pw-keepalive.log"
+INTERVAL=600  # 10 minutes (1Password expires in ~30min)
+
+log() {
+    echo "[$(date '+%H:%M:%S')] $1" >> "$LOGFILE"
+}
+
+get_op_account() {
+    # Try to get account from config file first
+    if [[ -f "$HOME/.ezdora-config" ]]; then
+        local account
+        account=$(grep -oP '^OP_ACCOUNT="\K[^"]+' "$HOME/.ezdora-config" 2>/dev/null)
+        [[ -n "$account" ]] && echo "$account" && return
+    fi
+    # Fallback: get first configured account from op CLI
+    op account list --format=json 2>/dev/null | jq -r '.[0].shorthand // empty' 2>/dev/null
+}
+
+keepalive_loop() {
+    log "Keepalive daemon started (PID $$)"
+    local account
+    account=$(get_op_account)
+
+    if [[ -z "$account" ]]; then
+        log "WARNING: No 1Password account found. Only Bitwarden will be kept alive."
+    else
+        log "Using 1Password account: $account"
+    fi
+
+    while true; do
+        # 1Password keepalive
+        if [[ -n "$account" && -f "$HOME/.op_session" ]]; then
+            session=$(cat "$HOME/.op_session")
+            # 'op vault list' reads data and extends the session
+            if eval "OP_SESSION_${account}=\"\$session\" op vault list --format json --account \"\$account\"" &>/dev/null; then
+                log "1Password: session extended"
+            else
+                log "1Password: session expired (run 'ops' to renew)"
+            fi
+        fi
+
+        # Bitwarden keepalive
+        if [[ -f "$HOME/.bw_session" ]]; then
+            session=$(cat "$HOME/.bw_session")
+            if BW_SESSION="$session" bw sync --quiet 2>/dev/null; then
+                log "Bitwarden: session extended"
+            else
+                log "Bitwarden: session expired (run 'bws' to renew)"
+            fi
+        fi
+
+        sleep $INTERVAL
+    done
+}
+
+case "${1:-}" in
+    start)
+        if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "Keepalive already running (PID $(cat "$PIDFILE"))"
+            exit 0
+        fi
+
+        # Start daemon in background
+        nohup "$0" daemon >> "$LOGFILE" 2>&1 &
+        echo $! > "$PIDFILE"
+        echo "Keepalive started (PID $!)"
+        echo "  Log: $LOGFILE"
+        ;;
+
+    stop)
+        if [[ -f "$PIDFILE" ]]; then
+            pid=$(cat "$PIDFILE")
+            if kill "$pid" 2>/dev/null; then
+                rm -f "$PIDFILE"
+                echo "Keepalive stopped"
+            else
+                rm -f "$PIDFILE"
+                echo "Keepalive was not running"
+            fi
+        else
+            echo "Keepalive is not running"
+        fi
+        ;;
+
+    status)
+        if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "Keepalive running (PID $(cat "$PIDFILE"))"
+            echo "  Last 5 logs:"
+            tail -5 "$LOGFILE" 2>/dev/null | sed 's/^/  /'
+        else
+            echo "Keepalive not running"
+        fi
+        ;;
+
+    daemon)
+        # Internal: run the keepalive loop
+        keepalive_loop
+        ;;
+
+    *)
+        echo "Usage: pw-keepalive {start|stop|status}"
+        exit 1
+        ;;
+esac

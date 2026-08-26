@@ -49,12 +49,21 @@ Rodam em ordem de nome, e a numeração importa.
 | `30-chezmoi.sh` | instala o chezmoi e aplica os dotfiles |
 | `40-claude-plugins.sh` | marketplaces e os 10 plugins do Claude Code |
 | `50-personal.sh` | roda seus módulos privados, se houver |
+| `56-herdr.sh` | instala o herdr pelo instalador oficial e habilita o unit, se os dotfiles o trouxeram |
+| `58-npm-ai-clis.sh` | `codex`, `gemini` e `grok` via npm, em `~/.npm-global` |
 | `60-cliproxyapi.sh` | instala a API local para as subscriptions de IA, sua config secreta e unit de usuário |
+| `61-ai-usagebar.sh` | medidor de uso das subscriptions (upstream do Akita) e seu plugin do Omarchy |
 | `62-cliproxyapi-exato.sh` | cria a segunda instância do CLIProxyAPI para a conta Codex de trabalho |
 | `64-codex-profiles.sh` | separa as contas do Codex CLI por `CODEX_HOME` e compartilha a configuração |
 | `66-claude-profile-restore.sh` | instala o mapa de sessão para o herdr restaurar cada pane no perfil Claude correto |
 | `68-pidbox.sh` | instala o guard de namespace de PID contra `kill(-1)` de suítes de teste |
 | `70-collie.sh` | instala opcionalmente o plugin Collie, sem publicar o bridge |
+| `72-tools-repo.sh` | clona seu repo privado de ferramentas, se `EZOMAR_TOOLS_REPO` estiver definido |
+| `74-meeting-rig.sh` | linka o `mrig` desse repo e roda o setup dele (venv + modelo) |
+| `76-claude-auth-preflight.sh` | instala o unit que avisa de perfis deslogados antes do herdr subir |
+| `78-pw-keepalive.sh` | daemon que mantém as sessões do 1Password e Bitwarden vivas |
+| `80-oom-guard.sh` | sysrq, piso de memória do desktop e teto de memória da frota do herdr |
+| `82-watchdog.sh` | arma o watchdog de hardware em 60s, se a placa tiver um |
 | `90-verify.sh` | confere o estado final e lista o que falta |
 
 **A ordem entre 20 e 30 é obrigatória.** Sem a chave age, o chezmoi aplica os
@@ -63,14 +72,14 @@ máquina quebrada que se parece com uma máquina pronta.
 
 ### Por que a camada de agentes também mora aqui
 
-Os seis módulos de 60 a 70 seguem o mesmo princípio de só adicionar o que já
+Os módulos de 56 a 82 seguem o mesmo princípio de só adicionar o que já
 quebrou, não o que talvez quebre. O chezmoi restaura os perfis e snippets, mas
 deliberadamente não consegue entregar units systemd de usuário, binários e
 configs com segredos. Sem esse complemento, as APIs locais não sobem, as contas
 do Codex se misturam, panes restaurados perdem o perfil e testes com `kill(-1)`
 podem derrubar a sessão; o Collie continua um opt-in sem início automático.
 
-A numeração também é uma dependência: todos os seis rodam **depois de
+A numeração também é uma dependência: todos rodam **depois de
 `30-chezmoi.sh`**, pois operam sobre `~/.claude-profiles`, `~/.config/zsh` e
 `~/.local/bin` restaurados por ele. Por isso ficam depois de `50-personal.sh` e
 antes de `90-verify.sh`.
@@ -95,11 +104,56 @@ export EZOMAR_DOTFILES_REPO="git@github.com:usuario/dotfiles.git"
 export EZOMAR_AGE_ITEM="Nome do item no seu cofre"
 ```
 
+Um terceiro valor é opcional. Algumas ferramentas são pessoais demais para este
+repo e vivas demais para uma cópia vendorizada (uma cópia é uma segunda fonte de
+verdade, e envelhece em silêncio). Os módulos 72 a 76 instalam direto de um clone
+do seu repo de ferramentas, e pulam se ele não estiver definido:
+
+| Variável | O que é |
+|---|---|
+| `EZOMAR_TOOLS_REPO` | repo git com `tools/meeting-rig/` e `scripts/claude-auth-preflight.sh` |
+| `EZOMAR_TOOLS_DIR` | onde clonar; padrão `~/work/repos/<org>/<repo>`, derivado da URL |
+
+O caminho padrão não é cosmético: o `.zshrc` dos dotfiles e o unit do preflight
+apontam para os scripts por esse caminho, então mantê-lo faz tudo funcionar sem
+editar nada.
+
+Botões de ajuste, todos com padrão razoável: `EZOMAR_HERDR_CHANNEL` (`preview`),
+`EZOMAR_HERDR_MEMORY_HIGH` e `EZOMAR_HERDR_MEMORY_MAX` (dimensionados pela RAM;
+128G dá 64G/72G), `EZOMAR_WATCHDOG_SEC` (60), `EZOMAR_SKIP_MRIG_SETUP` (`true`
+só linka, sem baixar o modelo).
+
 Todo o resto que for seu é preciso **depois** do chezmoi, então pode viajar
 junto com os dotfiles. Ponha em `~/.config/ezomar/apps/*.sh` no seu repo
 privado, e o módulo `50-personal.sh` executa em ordem de nome. Antes do chezmoi
 rodar o diretório não existe e o módulo não faz nada, o que é o comportamento
 correto numa máquina zerada.
+
+## Resiliência: o que entrou e o que ficou de fora
+
+A máquina primária congelou em 2026-07-30 (36 sessões do Claude mais Chrome,
+zram 100% cheio por 16 horas, load 283, e nem o OOM killer do kernel nem o
+systemd-oomd dispararam) e trava por completo a cada poucas semanas, sem panic
+e sem log. A carga de trabalho vai junto para o Omarchy; a proteção também.
+
+O `80-oom-guard.sh` porta três camadas: `kernel.sysrq=1` (a saída manual,
+Alt+SysRq+F, que o Arch deixa desligada), um piso de memória para o
+`session.slice` (o compositor continua respondendo sob pressão) e um teto para
+o `herdr.service`, que dá à frota seu próprio domínio de OOM: no limite o kernel
+mata o pane mais gordo dentro do cgroup, o herdr o retoma pelo uuid, e o resto
+da máquina nem percebe. O teto importa mais no Omarchy do que no Fedora: o oomd
+dele mata cgroups inteiros no `app.slice`, e a frota é um cgroup só. Por isso o
+drop-in também pede `ManagedOOMPreference=avoid`.
+
+Ficou de fora, de propósito: o earlyoom (o Omarchy escolheu o oomd por PSI e
+rejeita o earlyoom nos próprios comentários; com a frota contida, o motivo dele
+existir desaparece, e os dois juntos produzem kills duplicados), o swapfile em
+btrfs (o zram do Omarchy já ocupa toda a RAM, e `omarchy-hibernation-setup`
+cria o tier em disco se quiser) e o resto do sysctl (o Omarchy já traz igual).
+
+O `82-watchdog.sh` arma o watchdog de hardware em 60s. A placa é a mesma
+depois do format; o kernel morrendo sem ninguém por perto virava uma máquina
+parada até alguém segurar o botão. Sem `/dev/watchdog`, o módulo pula.
 
 ## O que ele não faz
 
@@ -121,6 +175,17 @@ automatizada. Depois de logar nos cofres, rode `chezmoi apply` uma vez.
 **Configuração do Claude.** Skills, perfis, `CLAUDE.md` e hooks vêm do chezmoi.
 Só os plugins são reinstalados aqui, porque carregam binário e não fazem sentido
 versionados.
+
+**Units systemd de usuário.** `herdr.service` e seus drop-ins, e qualquer outro
+unit seu, vêm do repo de dotfiles. O ezomar habilita o que encontra e escreve só
+os próprios drop-ins (`*/ezomar-oom-guard.conf`). O mesmo vale para
+`~/.config/ai-usagebar/config.toml`, que carrega chaves de API, e para o symlink
+`projects/` de cada perfil do Claude: o `90-verify.sh` reclama se faltarem.
+
+**A barra de uso do KDE.** A máquina primária mostrava o consumo das
+subscriptions num plasmoide alimentado por um fork do ai-usagebar. O fork não
+tinha nenhum commit próprio, então no Omarchy entra o upstream do Akita direto
+(`61-ai-usagebar.sh`), com o plugin nativo dele como interface.
 
 ## Aresta conhecida: `.claude/settings.json`
 
@@ -147,5 +212,9 @@ A correção de verdade seria no repo de dotfiles: separar a configuração dur�
 
 ## Contexto
 
-Escrito para uma máquina de reserva que espelha um desktop primário. O
-procedimento completo de bootstrap fica documentado no seu repo de dotfiles.
+Escrito em 2026-08 para uma máquina de reserva que espelha um desktop primário.
+Desde então a régua mudou: o próprio desktop primário vai ser formatado com
+Omarchy, e o que antes podia ficar só no post-install do Fedora (meeting-rig,
+oom-guard, watchdog, preflight de login, keepalive dos cofres) passou a ter
+módulo aqui, porque nada mais o reporia. O procedimento completo de bootstrap
+fica documentado no seu repo de dotfiles.
