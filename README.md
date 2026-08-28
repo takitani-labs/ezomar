@@ -277,23 +277,62 @@ você logar no cofre dentro da VM.
 ## Antes de formatar a máquina velha
 
 O `install.sh` responde se a máquina nova ficou pronta. O `preformat.sh` responde
-a pergunta anterior, na máquina que vai ser apagada: tudo que a nova vai precisar
-está capturado? Ele deriva a lista do estado vivo (skills, perfis do Claude,
-units systemd de usuário, configs com chave) e pergunta ao chezmoi o que está no
-source; depois confere que os repos envolvidos (dotfiles, ezomar e o de
-ferramentas) estão commitados e no remoto, porque um source perfeito que só
-existe no disco prestes a ser apagado não vale nada.
+a pergunta anterior, na máquina que vai ser apagada, e tem duas metades.
+
+A primeira é o que **bloqueia**: o source do chezmoi está completo (skills,
+perfis, units, configs com chave), os repos deste plano estão commitados e no
+remoto, **todos** os repos sob `~/work/repos` e `~/Devel` estão limpos e
+enviados, e existe um backup do estado de IA mais novo que o que ele carrega. A
+varredura de repos é o coração: medida nesta máquina, 680 repos em 3 a 4
+segundos, e ela achou 57 com alteração não commitada, 42 com commit que não está
+em remote nenhum e 4 sem remote nenhum. Sem essa seção, formatar perderia
+exatamente esses.
+
+A segunda metade é **medição**, e nunca deixa o veredito vermelho: diretórios de
+projeto sem git nenhum dentro, o que foi feito à mão em `~/.local/bin`, volumes
+do Docker (é onde moram os bancos) e os maiores diretórios do `$HOME`.
 
 ```bash
 bash preformat.sh          # relatório, só leitura
-bash preformat.sh --fix    # chezmoi add/re-add do que dá, commit e push do source, e reconfere
+bash preformat.sh --fix    # chezmoi add/re-add, commit e push do source, e reconfere
 ```
 
-Termina com "OK, pode formatar" ou com a lista de pendências. O `--fix` nunca
-toca `~/.claude/settings.json` (o Claude Code reescreve esse arquivo com estado
-de plugin) nem adiciona os drop-ins do oom-guard (o módulo 80 escreve os dele).
-O que ninguém versiona de propósito (transcrições do mrig, `~/.claude.json`,
-sessões do herdr) ele só lista, para você copiar se importar.
+O `--fix` só mexe no chezmoi. Ele não commita o seu trabalho, não faz push dele e
+não roda o backup: essas decisões são suas.
+
+## O que o chezmoi não carrega, e o `backup/` carrega
+
+Os dotfiles guardam a configuração durável. Duas coisas ficam de fora de
+propósito, e o `backup/` existe para elas:
+
+- **As conversas do Claude Code** (`~/.claude/projects`), que são dezenas de
+  gigabytes reescritos a cada minuto e transformariam cada commit dos dotfiles em
+  ruído.
+- **Toda credencial da máquina**, de `~/.claude.json` (a lista de servidores MCP
+  e seus tokens, que uma auditoria encontrou sem nenhuma origem de restauração)
+  até `~/.ssh`, `~/.gnupg`, `~/.aws` e os tokens do CLIProxyAPI.
+
+```bash
+bash backup/backup-ai.sh          # gera ~/backups/ezomar-ai-<data>.tar.zst + sha256
+bash backup/restore-ai.sh <tar>   # na máquina nova, depois do install.sh
+bash backup/restore-repos.sh      # reclona os repos nos mesmos caminhos
+```
+
+O tarball **não é encriptado** e carrega chave privada: ele viaja por ssh ou
+tailscale para uma máquina sua, e para lugar nenhum além disso.
+
+Duas decisões que valem entender. O backup pergunta ao **chezmoi**, na hora de
+rodar, o que já é gerenciado, e exclui isso do tarball; assim `~/.claude` entra
+sem as skills e sem o `settings.json`, sem que ninguém precise manter uma segunda
+lista que envelhece calada. E o restore move de lado **apenas os caminhos exatos**
+que vai restaurar, nunca as raízes que os contêm: mover `~/.config` para extrair
+`.config/opencode` apagaria em silêncio o `hypr/`, o `waybar/` e todo o resto que
+o Omarchy acabou de escrever.
+
+Reclonar nos mesmos caminhos não é preciosismo. O Claude Code indexa conversa
+pelo caminho absoluto do diretório, então um repo que volta uma pasta ao lado
+perde o histórico inteiro, sem erro nenhum. Quando o caminho mudar mesmo assim,
+`backup/rebind.sh` religa as conversas, o banco do zoxide e o trust do mise.
 
 ## Contexto
 
