@@ -1,0 +1,14 @@
+# Anexa o drive de autoinstall gerado por vm/autoinstall.sh.
+#
+# Vive num arquivo separado porque um override é a única forma limpa de o compose
+# ter um volume condicional. O vm/up.sh inclui este arquivo só quando
+# vm/cidata.img existe; sem ele a VM sobe no modo interativo, e um disco de 4 MB
+# a mais não fica aparecendo na lista de discos do instalador.
+services:
+  omarchy:
+    environment:
+      # if=virtio para o guest ver como um disco comum; o instalador procura o
+      # rótulo CIDATA via udev, não um caminho fixo.
+      ARGUMENTS: "-drive file=/cidata.img,format=raw,if=virtio,readonly=on"
+    volumes:
+      - "${EZOMAR_VM_CIDATA:-./cidata.img}:/cidata.img:ro"

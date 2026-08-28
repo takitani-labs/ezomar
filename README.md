@@ -36,6 +36,24 @@ lista aqui, e cada item entrou porque **algo quebrou**, não por precaução:
 Os dois últimos foram resolvidos no próprio repo de dotfiles (a chave vem do
 cofre, o antigen virou external do chezmoi). Os outros quatro estão aqui.
 
+Remedido numa VM com Omarchy **4.0.1** zerado, porque a base andou: agora ele já
+traz `claude`, `herdr`, `codex`, `gemini`, `grok`, `node`, `npm`, `jq`, `rsync` e
+`yay` de fábrica. Continuam faltando `zsh`, `uv`, `mosh`, `atuin` e `bun`, e é
+por isso que os módulos 56 e 58 hoje quase sempre só confirmam o que já existe.
+Eles ficam porque o repo também roda em Arch puro, onde nada disso vem junto.
+
+Duas coisas mudaram no 4.0.1 e custaram um módulo cada:
+
+- **A instalação é offline.** Ela consome os pacotes do próprio ISO e nunca baixa
+  os bancos dos repositórios, então numa máquina recém-instalada
+  `/var/lib/pacman/sync` só tem `offline.db` e qualquer `pacman -S` morre com
+  "target not found". O `00-packages.sh` sincroniza antes.
+- **`pacman -Syu` direto é bloqueado** por um hook de pré-transação ("Woah
+  partner..."), porque os upgrades passam por `omarchy update`, que cuida de
+  snapshot, keyring e migrações. Instalar sem `-u` é a convenção da casa: o
+  próprio `omarchy pkg add` é um `pacman -S --needed`. Em Arch puro o módulo usa
+  `-Syu`, que lá é o certo.
+
 ## Módulos
 
 Rodam em ordem de nome, e a numeração importa.
@@ -209,6 +227,52 @@ seguida.
 
 A correção de verdade seria no repo de dotfiles: separar a configuração durável
 (hooks, statusline) do estado local de plugins, e versionar só a primeira.
+
+## Ensaio numa VM, antes de tocar na máquina real
+
+Testar este repo direto na máquina que ele vai reconstruir é o único jeito
+garantido de descobrir tarde demais que um módulo quebra. O `vm/` sobe um
+Omarchy de verdade numa VM e roda o repo dentro dela.
+
+O motor é o [qemux/qemu](https://github.com/qemus/qemu): QEMU com KVM dentro de
+um container, UEFI, e a tela servida no browser. Não é preciso libvirt nem
+cliente de VNC no host.
+
+```bash
+bash vm/autoinstall.sh      # gera o drive de instalação desatendida
+bash vm/up.sh               # sobe a VM com o ISO mais recente do ~/Downloads
+                            # tela em http://localhost:8007
+bash vm/prepare-guest.sh    # sudo sem senha e rsync, depois que instalar
+./vm-test.sh                # roda os módulos lá dentro, e resume o que passou
+```
+
+A instalação é desatendida porque o instalador do Omarchy aceita um drive
+rotulado `cidata` (o rótulo do NoCloud do cloud-init) com os mesmos arquivos que
+o assistente gráfico produziria, e nesse caso pula o assistente. O
+`vm/autoinstall.sh` gera esse drive. Isso é o que faz o ensaio ser repetível:
+`bash vm/reset.sh --up` reinstala do zero sem uma tecla.
+
+Vale pôr sua chave pública nele, o que o script faz por padrão: com um
+`authorized_keys` no drive, o próprio instalador habilita o sshd, libera a porta
+no ufw e instala a chave. Sem isso o Omarchy instala com sshd desligado e ufw
+negando tudo, e o ensaio começa digitando comandos na GUI da VM.
+
+| Script | O que faz |
+|---|---|
+| `vm/up.sh` | sobe a VM, conferindo KVM, ISO e portas antes |
+| `vm/autoinstall.sh` | gera o drive `cidata` (usuário, senha, disco, chave) |
+| `vm/prepare-guest.sh` | libera sudo sem senha na VM e garante o rsync |
+| `vm/console.sh` | print da tela e envio de teclas pelo monitor do QEMU |
+| `vm/reset.sh` | apaga disco e NVRAM de dentro do container, sem sudo no host |
+
+O `vm-test.sh` leva a árvore de trabalho por rsync, não um clone do GitHub, então
+o que é testado é o que está no disco agora, mudanças não commitadas incluídas.
+
+Nem todo módulo roda numa VM zerada, e o script não finge que sim: 19 rodam,
+4 dependem do cofre ou do repo privado de dotfiles (`20-age-key`, `30-chezmoi`,
+`62-cliproxyapi-exato` e `90-verify`) e ficam de fora do conjunto padrão.
+`./vm-test.sh --list` diz o porquê de cada um; `--vault` roda só esses, depois de
+você logar no cofre dentro da VM.
 
 ## Antes de formatar a máquina velha
 

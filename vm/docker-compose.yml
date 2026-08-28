@@ -1,0 +1,41 @@
+name: ezomar-vm
+
+# Omarchy numa VM, para ensaiar este repo antes de formatar a máquina de verdade.
+#
+# O motor é o qemux/qemu (QEMU/KVM dentro de um container), o mesmo esquema do
+# dockurr/windows. A GUI sai no browser, então não é preciso cliente de VNC nem
+# libvirt na máquina host. Herdado do ezarch (vm/docker-compose.yml), com três
+# mudanças: ISO local em vez de download, portas próprias para conviver com
+# outra VM já de pé, e sem restart automático.
+#
+# Suba pelo wrapper, que resolve o ISO e confere as portas:
+#
+#   bash vm/up.sh
+#
+# O ISO é montado em /boot.iso, e nesse caso o qemux ignora a variável BOOT.
+# UEFI é o padrão dele, que é como a máquina real vai bootar.
+services:
+  omarchy:
+    image: qemux/qemu
+    container_name: ${EZOMAR_VM_NAME:-ezomar-vm}
+    environment:
+      RAM_SIZE: "${EZOMAR_VM_RAM:-8G}"
+      CPU_CORES: "${EZOMAR_VM_CPUS:-6}"
+      DISK_SIZE: "${EZOMAR_VM_DISK:-64G}"
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "${EZOMAR_VM_WEB_PORT:-8007}:8006"            # viewer web (noVNC)
+      - "127.0.0.1:${EZOMAR_VM_VNC_PORT:-5901}:5900"  # VNC direto, se preferir Remmina
+      - "127.0.0.1:${EZOMAR_VM_SSH_PORT:-2223}:22"    # ssh para o guest, usado pelo vm-test.sh
+    volumes:
+      - "${EZOMAR_VM_ISO:?defina EZOMAR_VM_ISO ou use vm/up.sh}:/boot.iso:ro"
+      - "${EZOMAR_VM_STORAGE:-./storage}:/storage"
+    # Sem restart automático de propósito. A VM anterior desta máquina ficou
+    # dois dias de pé segurando 8G e as portas, parada no instalador, porque
+    # subia sozinha a cada boot. Um ensaio é transitório; suba quando for usar.
+    restart: "no"
+    stop_grace_period: 2m

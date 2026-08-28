@@ -1,0 +1,5 @@
+
+# VM de ensaio: disco da VM (dezenas de GB) e ISOs.
+vm/storage/
+*.iso
+vm/cidata.img
