@@ -62,7 +62,7 @@ declare -A TIER=(
 )
 declare -A NOTE=(
   [00-packages.sh]="pacman; precisa de rede e sudo"
-  [05-shell.sh]="chsh via sudo; vale no próximo login"
+  [35-shell.sh]="chsh via sudo, e só depois do chezmoi; pula sem ~/.zshrc"
   [10-bitwarden-cli.sh]="baixa o binário oficial, não faz login"
   [20-age-key.sh]="exige o Bitwarden destravado NA VM (bw login && bw unlock)"
   [30-chezmoi.sh]="exige a chave age do 20 e uma chave SSH com acesso ao repo privado"
@@ -442,7 +442,7 @@ case "$PROBE" in
   # install.sh usa para aceitar a maquina. Olhar so o ID daria um aviso falso.
   *"id=arch"*|*"id_like="*"arch"*) : ;;
   *) warn "Aviso: a VM não se identifica como Arch ($(printf '%s' "$PROBE" | sed -n 's/^id=//p')),"
-     warn "       então 00-packages e 05-shell provavelmente vão falhar." ;;
+     warn "       então 00-packages e 35-shell provavelmente vão falhar." ;;
 esac
 say "VM alcançável."
 

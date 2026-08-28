@@ -61,16 +61,16 @@ Rodam em ordem de nome, e a numeração importa.
 | Módulo | O que faz |
 |---|---|
 | `00-packages.sh` | o delta de pacotes via pacman |
-| `05-shell.sh` | `chsh` para zsh, e registra em `/etc/shells` |
 | `10-bitwarden-cli.sh` | binário oficial do `bw` em `~/.local/bin`, sem root |
 | `20-age-key.sh` | restaura a identidade age do Bitwarden |
 | `30-chezmoi.sh` | instala o chezmoi e aplica os dotfiles |
+| `35-shell.sh` | `chsh` para zsh, depois do chezmoi ter entregue o `.zshrc` |
 | `40-claude-plugins.sh` | marketplaces e os 10 plugins do Claude Code |
 | `50-personal.sh` | roda seus módulos privados, se houver |
 | `56-herdr.sh` | instala o herdr pelo instalador oficial e habilita o unit, se os dotfiles o trouxeram |
 | `58-npm-ai-clis.sh` | `codex`, `gemini` e `grok` via npm, em `~/.npm-global` |
 | `60-cliproxyapi.sh` | instala a API local para as subscriptions de IA, sua config secreta e unit de usuário |
-| `61-ai-usagebar.sh` | medidor de uso das subscriptions (upstream do Akita) e seu plugin do Omarchy |
+| `61-ai-usagebar.sh` | medidor de uso das subscriptions (upstream do Akita): instala, habilita e põe na barra |
 | `62-cliproxyapi-exato.sh` | cria a segunda instância do CLIProxyAPI para a conta Codex de trabalho |
 | `64-codex-profiles.sh` | separa as contas do Codex CLI por `CODEX_HOME` e compartilha a configuração |
 | `66-claude-profile-restore.sh` | instala o mapa de sessão para o herdr restaurar cada pane no perfil Claude correto |
@@ -84,9 +84,14 @@ Rodam em ordem de nome, e a numeração importa.
 | `82-watchdog.sh` | arma o watchdog de hardware em 60s, se a placa tiver um |
 | `90-verify.sh` | confere o estado final e lista o que falta |
 
-**A ordem entre 20 e 30 é obrigatória.** Sem a chave age, o chezmoi aplica os
+**A ordem entre 20, 30 e 35 é obrigatória.** Sem a chave age, o chezmoi aplica os
 400 arquivos e reporta sucesso, mas tudo que é encriptado fica ilegível. É uma
 máquina quebrada que se parece com uma máquina pronta.
+
+O 35 vem depois do 30 pelo mesmo motivo. Trocar o shell de login antes de os
+dotfiles existirem deixa um zsh sem nenhum arquivo de inicialização, e o próximo
+login cai no assistente `zsh-newuser-install`. Medido numa VM sem cofre. O `chsh`
+só vale no login seguinte de qualquer jeito, então adiantá-lo não comprava nada.
 
 ### Por que a camada de agentes também mora aqui
 
@@ -204,6 +209,14 @@ os próprios drop-ins (`*/ezomar-oom-guard.conf`). O mesmo vale para
 subscriptions num plasmoide alimentado por um fork do ai-usagebar. O fork não
 tinha nenhum commit próprio, então no Omarchy entra o upstream do Akita direto
 (`61-ai-usagebar.sh`), com o plugin nativo dele como interface.
+
+O Omarchy 4 tem um widget próprio para isso, o `omarchy.agents`, e ele já vem na
+barra padrão. Ele não substitui o módulo aqui: o coletor dele lê
+`CLAUDE_CONFIG_DIR` ou `~/.claude`, e `CODEX_HOME` ou `~/.codex`, ou seja, uma
+conta de cada. Esta máquina tem cinco contas Claude e duas Codex, mais Kimi,
+Gemini e Grok. Os dois convivem na barra: o nativo mostra a conta ativa, o do
+Akita mostra a frota. Se um dia uma conta bastar, o módulo 61 sai e o nativo
+resolve sozinho.
 
 ## Aresta conhecida: `.claude/settings.json`
 
