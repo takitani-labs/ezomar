@@ -15,6 +15,19 @@ set -euo pipefail
 # Knob:
 #   EZOMAR_WATCHDOG_SEC   timeout in seconds (default 60, floor 30)
 
+# Opt-in desde 2026-08-28. Os travamentos que motivaram isto foram na maquina
+# antiga, com outro kernel e outro compositor; pode ser que nao se repitam. Um
+# watchdog armado tambem nao e de graca: se algum dia o PID 1 deixar de ser
+# escalonado por um motivo legitimo, a placa reinicia a maquina no meio do que
+# voce estava fazendo. Arme quando travar de novo, nao antes.
+#
+#   EZOMAR_INSTALL_WATCHDOG=true bash install/apps/82-watchdog.sh
+if [ "${EZOMAR_INSTALL_WATCHDOG:-}" != "true" ]; then
+  echo "[ezomar][watchdog] Opt-in, pulando. Arme se a maquina voltar a travar por completo:"
+  echo "[ezomar][watchdog]   EZOMAR_INSTALL_WATCHDOG=true bash install/apps/82-watchdog.sh"
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TPL="$SCRIPT_DIR/../templates/watchdog/99-watchdog.conf"
 DROPIN="/etc/systemd/system.conf.d/99-watchdog.conf"

@@ -9,6 +9,18 @@ set -euo pipefail
 # No Arch, unshare vem de util-linux, parte do base. A ausência indica uma
 # instalação quebrada e deve falhar claramente, sem instalar pacotes aqui.
 
+# Opt-in desde 2026-08-28. Ele nasceu de um `kill(-1)` real que derrubou a
+# sessao, mas isso aconteceu na maquina antiga: pela regra da casa (so entra o
+# que ja quebrou AQUI), ele espera acontecer de novo. Nao custa nada estar
+# ausente, porque nada o chama sozinho; e um comando que voce digita.
+#
+#   EZOMAR_INSTALL_PIDBOX=true bash install/apps/68-pidbox.sh
+if [ "${EZOMAR_INSTALL_PIDBOX:-}" != "true" ]; then
+  echo "[ezomar][pidbox] Opt-in, pulando. Instale quando uma suite de testes derrubar a sessao:"
+  echo "[ezomar][pidbox]   EZOMAR_INSTALL_PIDBOX=true bash install/apps/68-pidbox.sh"
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TPL="$SCRIPT_DIR/../templates/pidbox"
 SOURCE="$TPL/pidbox"

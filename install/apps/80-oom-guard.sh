@@ -11,13 +11,24 @@ set -euo pipefail
 # weeks, 250 of them browser tabs. The workload moves with the owner to Omarchy;
 # the protection has to move too.
 #
-# What is ported, outermost first:
-#   1. kernel.sysrq=1 + admin_reserve   the manual escape hatch (system, sudo)
-#   2. session.slice MemoryMin          the desktop stays steerable (user unit)
-#   3. herdr.service MemoryHigh/Max     the fleet gets its own OOM domain, and
-#      ManagedOOMPreference=avoid       oomd never picks the whole fleet (user unit)
+# O modulo esta partido em duas metades desde 2026-08-28, e a divisao e entre
+# CAPACIDADE e SEGURO:
 #
-# What is deliberately NOT ported from the Fedora version:
+#   Sempre: kernel.sysrq=1 + vm.admin_reserve_kbytes. Isto nao previne nada, e a
+#     habilidade de agir quando ja deu errado. Sem o sysrq, um espiral de reclaim
+#     so termina no botao de forca; com ele, termina em Alt+SysRq+F. Sao duas
+#     linhas e nao mudam o comportamento da maquina enquanto nada acontece, entao
+#     ficam no caminho padrao.
+#
+#   Opt-in (EZOMAR_OOM_CGROUPS=true): o piso do session.slice e o teto do
+#     herdr.service. Estes SAO seguro contra a repeticao de um incidente que
+#     aconteceu na maquina antiga, com metade do zram que o Omarchy usa. E os
+#     numeros do teto foram medidos LA: 64G/72G saiu de um cgroup que vivia em
+#     69,6G no Fedora. Chutar esses valores aqui e pior do que nao ter teto, e a
+#     medicao certa e a da maquina nova, depois de ela rodar sob carga:
+#       systemctl --user show herdr.service -p MemoryCurrent --value
+#
+# O que deliberadamente NAO veio da versao do Fedora:
 #   - earlyoom: Omarchy chose systemd-oomd (PSI-based) and rejects earlyoom in
 #     its own oomd.conf comments. With the fleet contained by cgroup the reason
 #     earlyoom existed (picking the right victim in a mixed workload) is gone,
@@ -46,6 +57,14 @@ say "Antes: sysrq=$(cat /proc/sys/kernel/sysrq) admin_reserve=$(cat /proc/sys/vm
 sudo install -m 0644 "$TPL/99-oom-guard.conf" /etc/sysctl.d/99-oom-guard.conf
 sudo sysctl -q -p /etc/sysctl.d/99-oom-guard.conf
 say "sysrq=$(cat /proc/sys/kernel/sysrq) (Alt+SysRq+F força um OOM kill; REISUB disponível)"
+
+if [ "${EZOMAR_OOM_CGROUPS:-}" != "true" ]; then
+  say "Limites de cgroup são opt-in; a saída manual acima já está no lugar."
+  say "Se a máquina voltar a congelar sob carga de frota, meça e ative:"
+  say "  systemctl --user show herdr.service -p MemoryCurrent --value"
+  say "  EZOMAR_OOM_CGROUPS=true EZOMAR_HERDR_MEMORY_MAX=<medido> bash install/apps/80-oom-guard.sh"
+  exit 0
+fi
 
 # --- 2. desktop floor ----------------------------------------------------------
 install -D -m 0644 "$TPL/session-slice-memory.conf" "$USER_UNITS/session.slice.d/ezomar-oom-guard.conf"

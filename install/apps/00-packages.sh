@@ -1,17 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The pacman delta. Every module below that needs a package lists it here; no
-# module shells out to pacman on its own.
+# O delta de pacotes. Todo módulo que precisa de pacote lista aqui; nenhum outro
+# chama o pacman por conta própria.
 #
-#   zsh nodejs npm atuin unzip     measured on a clean Omarchy 3.8.4 (see README)
-#   mosh                           shells that survive a bad link
-#   jq                             pw-keepalive reads `op account list` with it
-#   uv                             mrig setup builds its venv with it
-#   libpulse espeak-ng zenity libnotify
-#                                  meeting-rig: parec/pactl, self-test voice,
-#                                  suggestion popup, notify-send
-PKGS=(zsh nodejs npm atuin unzip mosh jq uv libpulse espeak-ng zenity libnotify)
+# A lista é curta porque foi medida numa instalação limpa, não montada por
+# precaução, e encolheu quando foi remedida no Omarchy 4.0.1. O que saiu, e por
+# quê, está no README; o caso que importa é o `nodejs`: o Omarchy administra o
+# node pelo mise, e instalar a versão do pacman por cima faz o /usr/bin/node
+# sombrear o shim do mise. Hoje as duas versões coincidem, e no dia em que
+# divergirem o sintoma aparece longe da causa.
+#
+#   zsh     o shell de login; sem ele o .zshrc de 591 linhas nunca carrega
+#   atuin   histórico de shell; o .zshrc degrada com aviso sem ele
+#   unzip   usado pelos instaladores que baixam zip
+#   mosh    shells que sobrevivem a um link ruim
+PKGS=(zsh atuin unzip mosh)
+
+# Dependências do meeting-rig (módulo 74), que só roda quando o repo de
+# ferramentas está configurado. Instalar sempre deixaria dois pacotes de áudio e
+# um de diálogo GTK numa máquina que nunca vai usá-los. libpulse e libnotify,
+# que ele também precisa, já vêm no Omarchy.
+if [ -n "${EZOMAR_TOOLS_REPO:-}" ]; then
+  PKGS+=(uv espeak-ng zenity)
+fi
+
 MISSING=()
 for p in "${PKGS[@]}"; do
   pacman -Qi "$p" >/dev/null 2>&1 || MISSING+=("$p")
