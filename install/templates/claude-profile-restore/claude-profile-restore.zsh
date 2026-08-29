@@ -1,6 +1,7 @@
 # Devolve ao Claude Code o perfil correto quando o herdr restaura um pane. O
 # herdr preserva o sessionId, mas não CLAUDE_CONFIG_DIR; o helper encontra o
-# perfil de nascimento da sessão sem deixar a variável vazar para o shell.
+# perfil efetivo da sessão (troca explícita ou, sem ela, perfil de nascimento)
+# sem deixar a variável vazar para o shell.
 claude() {
   local cfg="${CLAUDE_CONFIG_DIR:-}"
 

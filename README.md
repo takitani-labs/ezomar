@@ -38,9 +38,19 @@ cofre, o antigen virou external do chezmoi). Os outros quatro estão aqui.
 
 Remedido numa VM com Omarchy **4.0.1** zerado, porque a base andou: agora ele já
 traz `claude`, `herdr`, `codex`, `gemini`, `grok`, `node`, `npm`, `jq`, `rsync` e
-`yay` de fábrica. Continuam faltando `zsh`, `uv`, `mosh`, `atuin` e `bun`, e é
-por isso que os módulos 56 e 58 hoje quase sempre só confirmam o que já existe.
-Eles ficam porque o repo também roda em Arch puro, onde nada disso vem junto.
+`yay` de fábrica. Continuam faltando `zsh`, `mosh`, `atuin` e `bun`, e é por isso
+que os módulos 56 e 58 hoje quase sempre só confirmam o que já existe. Eles ficam
+porque o repo também roda em Arch puro, onde nada disso vem junto.
+
+Um dos itens saiu da lista por ser **ativamente ruim**. O `nodejs` estava aqui
+desde a medição no 3.8.4, quando ele não vinha. No 4.0.1 o Omarchy administra o
+node pelo **mise**, e instalar a versão do pacman por cima faz `/usr/bin/node`
+sombrear o shim do mise: medido na VM, `node` resolvia para o mise antes do
+`00-packages` e para o `/usr/bin` depois. Hoje as duas versões coincidem, e no dia
+em que divergirem o sintoma aparece longe da causa. Saíram junto `jq`, `libpulse`
+e `libnotify`, que o Omarchy já traz, e `uv`, `espeak-ng` e `zenity` viraram
+condicionais: só entram quando `EZOMAR_TOOLS_REPO` está definido, porque existem
+apenas para o meeting-rig.
 
 Duas coisas mudaram no 4.0.1 e custaram um módulo cada:
 
@@ -74,14 +84,16 @@ Rodam em ordem de nome, e a numeração importa.
 | `62-cliproxyapi-exato.sh` | cria a segunda instância do CLIProxyAPI para a conta Codex de trabalho |
 | `64-codex-profiles.sh` | separa as contas do Codex CLI por `CODEX_HOME` e compartilha a configuração |
 | `66-claude-profile-restore.sh` | instala o mapa de sessão para o herdr restaurar cada pane no perfil Claude correto |
-| `68-pidbox.sh` | instala o guard de namespace de PID contra `kill(-1)` de suítes de teste |
+| `67-herdr-integrations.sh` | instala os hooks oficiais de session id em todos os profiles Claude e no Codex |
+| `68-pidbox.sh` | opt-in: guard de namespace de PID contra `kill(-1)` de suítes de teste |
+| `69-herdr-profile-switch.sh` | instala `Ctrl+B, A` para trocar a conta do Codex ou Claude sem perder a sessão |
 | `70-collie.sh` | instala opcionalmente o plugin Collie, sem publicar o bridge |
 | `72-tools-repo.sh` | clona seu repo privado de ferramentas, se `EZOMAR_TOOLS_REPO` estiver definido |
 | `74-meeting-rig.sh` | linka o `mrig` desse repo e roda o setup dele (venv + modelo) |
 | `76-claude-auth-preflight.sh` | instala o unit que avisa de perfis deslogados antes do herdr subir |
 | `78-pw-keepalive.sh` | daemon que mantém as sessões do 1Password e Bitwarden vivas |
-| `80-oom-guard.sh` | sysrq, piso de memória do desktop e teto de memória da frota do herdr |
-| `82-watchdog.sh` | arma o watchdog de hardware em 60s, se a placa tiver um |
+| `80-oom-guard.sh` | sysrq e reserva de root; os limites de cgroup são opt-in |
+| `82-watchdog.sh` | opt-in: arma o watchdog de hardware em 60s |
 | `90-verify.sh` | confere o estado final e lista o que falta |
 
 **A ordem entre 20, 30 e 35 é obrigatória.** Sem a chave age, o chezmoi aplica os
@@ -92,6 +104,19 @@ O 35 vem depois do 30 pelo mesmo motivo. Trocar o shell de login antes de os
 dotfiles existirem deixa um zsh sem nenhum arquivo de inicialização, e o próximo
 login cai no assistente `zsh-newuser-install`. Medido numa VM sem cofre. O `chsh`
 só vale no login seguinte de qualquer jeito, então adiantá-lo não comprava nada.
+
+### Troca de subscription dentro do Herdr
+
+Com um Codex ou Claude parado no prompt, `Ctrl+B, A` abre os profiles daquele
+agente, encerra o processo atual e retoma o mesmo session id na conta escolhida.
+O Codex entrega só o rollout atual ao outro `CODEX_HOME`; o Claude reaproveita o
+`projects/` compartilhado e grava a escolha em
+`~/.claude/session-profile-overrides.tsv`, para os restores seguintes manterem
+o novo `CLAUDE_CONFIG_DIR`. Variáveis privadas de providers Claude são aplicadas
+sem aparecer no comando ou no scrollback do pane.
+
+O backup do ezomar já inclui `.claude` e `.codex-profiles`, portanto leva tanto
+as conversas quanto os overrides intencionais para a máquina formatada.
 
 ### Por que a camada de agentes também mora aqui
 
@@ -152,31 +177,41 @@ privado, e o módulo `50-personal.sh` executa em ordem de nome. Antes do chezmoi
 rodar o diretório não existe e o módulo não faz nada, o que é o comportamento
 correto numa máquina zerada.
 
-## Resiliência: o que entrou e o que ficou de fora
+## Resiliência: o que entrou, e por que quase tudo é opt-in
 
-A máquina primária congelou em 2026-07-30 (36 sessões do Claude mais Chrome,
-zram 100% cheio por 16 horas, load 283, e nem o OOM killer do kernel nem o
-systemd-oomd dispararam) e trava por completo a cada poucas semanas, sem panic
-e sem log. A carga de trabalho vai junto para o Omarchy; a proteção também.
+A máquina antiga congelou em 2026-07-30 (36 sessões do Claude mais Chrome, zram
+100% cheio por 16 horas, load 283, e nem o OOM killer do kernel nem o
+systemd-oomd dispararam) e travava por completo a cada poucas semanas, sem panic
+e sem log. Três módulos nasceram disso.
 
-O `80-oom-guard.sh` porta três camadas: `kernel.sysrq=1` (a saída manual,
-Alt+SysRq+F, que o Arch deixa desligada), um piso de memória para o
-`session.slice` (o compositor continua respondendo sob pressão) e um teto para
-o `herdr.service`, que dá à frota seu próprio domínio de OOM: no limite o kernel
-mata o pane mais gordo dentro do cgroup, o herdr o retoma pelo uuid, e o resto
-da máquina nem percebe. O teto importa mais no Omarchy do que no Fedora: o oomd
-dele mata cgroups inteiros no `app.slice`, e a frota é um cgroup só. Por isso o
-drop-in também pede `ManagedOOMPreference=avoid`.
+Só um pedaço deles roda por padrão, e a divisão é entre **capacidade** e
+**seguro**. O `80-oom-guard.sh` sempre instala duas linhas de sysctl,
+`kernel.sysrq=1` e `vm.admin_reserve_kbytes`: isso não previne nada, é a
+habilidade de agir depois que já deu errado. Sem o sysrq, um espiral de reclaim
+só termina no botão de força; com ele, termina em `Alt+SysRq+F`. Não muda o
+comportamento da máquina enquanto nada acontece.
 
-Ficou de fora, de propósito: o earlyoom (o Omarchy escolheu o oomd por PSI e
-rejeita o earlyoom nos próprios comentários; com a frota contida, o motivo dele
-existir desaparece, e os dois juntos produzem kills duplicados), o swapfile em
-btrfs (o zram do Omarchy já ocupa toda a RAM, e `omarchy-hibernation-setup`
-cria o tier em disco se quiser) e o resto do sysctl (o Omarchy já traz igual).
+O resto espera acontecer, que é a regra da casa: **só entra o que já quebrou
+aqui**. Os incidentes foram no Fedora com KDE, com metade do zram que o Omarchy
+usa, e podem não se repetir.
 
-O `82-watchdog.sh` arma o watchdog de hardware em 60s. A placa é a mesma
-depois do format; o kernel morrendo sem ninguém por perto virava uma máquina
-parada até alguém segurar o botão. Sem `/dev/watchdog`, o módulo pula.
+```bash
+EZOMAR_OOM_CGROUPS=true      bash install/apps/80-oom-guard.sh   # piso do desktop + teto da frota
+EZOMAR_INSTALL_WATCHDOG=true bash install/apps/82-watchdog.sh    # reboot automático em travamento
+EZOMAR_INSTALL_PIDBOX=true   bash install/apps/68-pidbox.sh      # conter kill(-1) de teste
+```
+
+O teto da frota tem um motivo a mais para esperar: os valores 64G/72G foram
+medidos num cgroup que vivia em 69,6G **no Fedora**. Chutar isso numa máquina com
+outro perfil de memória é pior do que não ter teto. Meça antes, sob carga:
+
+```bash
+systemctl --user show herdr.service -p MemoryCurrent --value
+```
+
+Ficou de fora de vez: o earlyoom (o Omarchy escolheu o oomd por PSI e o rejeita
+nos próprios comentários) e o swapfile em btrfs (o zram do Omarchy já ocupa a RAM
+inteira).
 
 ## O que ele não faz
 

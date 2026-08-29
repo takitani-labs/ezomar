@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Move the focused Herdr conversation to another account/profile. Codex needs
+# its rollout exposed in the target CODEX_HOME; Claude profiles already share
+# ~/.claude/projects, so Claude only needs an explicit session-profile override.
+
+PROFILES_ROOT=""
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+
+# Resume Claude without putting provider credentials from settings.json on the
+# pane command line or in terminal scrollback. Python replaces itself with
+# Claude, preserving the interactive terminal as stdin/stdout.
+if [ "${1:-}" = "--resume-claude" ]; then
+  [ "$#" -eq 3 ] || { echo "usage: $0 --resume-claude <profile> <session-id>" >&2; exit 2; }
+  profile="$2"
+  session_id="$3"
+  [[ "$profile" =~ ^[[:alnum:]_.-]+$ ]] || { echo "invalid Claude profile" >&2; exit 2; }
+  [[ "$session_id" =~ ^[[:alnum:]_-]+$ ]] || { echo "invalid Claude session id" >&2; exit 2; }
+  PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
+  profile_dir="$PROFILES_ROOT/$profile"
+  [ -d "$profile_dir" ] || { echo "Claude profile not found: $profile" >&2; exit 1; }
+  exec python3 -c '
+import json, os, pathlib, sys
+profile_dir, session_id = sys.argv[1:]
+env = os.environ.copy()
+settings = pathlib.Path(profile_dir, "settings.json")
+if settings.is_file():
+    try:
+        configured = json.loads(settings.read_text()).get("env", {})
+    except Exception as exc:
+        raise SystemExit(f"invalid Claude settings in {settings}: {exc}")
+    if isinstance(configured, dict):
+        for key, value in configured.items():
+            if isinstance(key, str) and key:
+                env[key] = str(value)
+env["CLAUDE_CONFIG_DIR"] = profile_dir
+os.execvpe("claude", ["claude", "--resume", session_id], env)
+' "$profile_dir" "$session_id"
+fi
+
+HERDR_BIN="${HERDR_BIN_PATH:-herdr}"
+PANE_ID="${HERDR_ACTIVE_PANE_ID:-${1:-}}"
+COMPAT_BIN="${HERDR_COMPAT_BIN:-$HOME/.local/bin/herdr-server-compat}"
+
+pause_on_error() {
+  if [ -t 0 ]; then
+    printf '\n'
+    read -r -p "Pressione Enter para fechar..." _
+  fi
+}
+
+fail() {
+  printf 'Erro: %s\n' "$*" >&2
+  pause_on_error
+  exit 1
+}
+
+json_value() {
+  local expression="$1"
+  jq -r "$expression // empty"
+}
+
+[ -n "$PANE_ID" ] || fail "o Herdr não informou o pane ativo."
+command -v jq >/dev/null 2>&1 || fail "jq não encontrado (reexecute o provisionamento da máquina)."
+
+# A self-update can replace the CLI while an older server deliberately stays
+# alive. Try the installed CLI first, then the server-matched preserved copy.
+pane_json=""
+for candidate in "$HERDR_BIN" "$COMPAT_BIN"; do
+  [ -n "$candidate" ] || continue
+  command -v "$candidate" >/dev/null 2>&1 || continue
+  if candidate_json="$("$candidate" pane get "$PANE_ID" 2>/dev/null)" \
+      && jq -e '.result.pane' >/dev/null <<<"$candidate_json"; then
+    HERDR_BIN="$candidate"
+    pane_json="$candidate_json"
+    break
+  fi
+done
+[ -n "$pane_json" ] || fail "não consegui consultar o pane $PANE_ID (protocolo do servidor incompatível)."
+
+agent="$(json_value '.result.pane.agent' <<<"$pane_json")"
+state="$(json_value '.result.pane.agent_status' <<<"$pane_json")"
+session_id="$(json_value '.result.pane.agent_session.value' <<<"$pane_json")"
+
+case "$agent" in
+  codex)
+    agent_label="Codex"
+    PROFILES_ROOT="${CODEX_PROFILES_ROOT:-$HOME/.codex-profiles}"
+    profile_env="CODEX_HOME"
+    process_name="codex"
+    exit_command="/quit"
+    ;;
+  claude)
+    agent_label="Claude"
+    PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
+    profile_env="CLAUDE_CONFIG_DIR"
+    process_name="claude"
+    exit_command="/exit"
+    command -v claude-session-profile >/dev/null 2>&1 \
+      || fail "claude-session-profile não encontrado (reexecute o módulo de restore dos profiles Claude)."
+    ;;
+  *) fail "o pane ativo não é Codex nem Claude (${agent:-sem agente})." ;;
+esac
+
+[ "$state" != "working" ] \
+  || fail "o $agent_label ainda está respondendo. Espere ele ficar idle e tente de novo."
+[ -n "$session_id" ] \
+  || fail "esta sessão ainda não reportou seu id ao Herdr. Reabra-a uma vez após instalar a integração."
+[[ "$session_id" =~ ^[[:alnum:]_-]+$ ]] || fail "session id inválido recebido do Herdr."
+[ -d "$PROFILES_ROOT" ] || fail "profiles $agent_label não encontrados em $PROFILES_ROOT."
+
+profiles=()
+for profile_dir in "$PROFILES_ROOT"/*/; do
+  [ -d "$profile_dir" ] || continue
+  profile="$(basename "$profile_dir")"
+  case "$agent" in
+    codex)
+      [ "$profile" = "shared" ] && continue
+      [ -f "$profile_dir/auth.json" ] || continue
+      ;;
+    claude)
+      [ -f "$profile_dir/settings.json" ] || [ -f "$profile_dir/.credentials.json" ] || continue
+      [ -d "$profile_dir/projects" ] || continue
+      ;;
+  esac
+  profiles+=("$profile")
+done
+[ "${#profiles[@]}" -gt 0 ] || fail "nenhum profile $agent_label utilizável."
+
+current_profile=""
+process_json="$("$HERDR_BIN" pane process-info --pane "$PANE_ID" 2>/dev/null || true)"
+while IFS= read -r pid; do
+  [ -r "/proc/$pid/environ" ] || continue
+  profile_home="$(tr '\0' '\n' < "/proc/$pid/environ" \
+    | sed -n "s/^${profile_env}=//p" | head -n 1)"
+  case "$profile_home" in
+    "$PROFILES_ROOT"/*) current_profile="${profile_home#"$PROFILES_ROOT"/}"; current_profile="${current_profile%%/*}"; break ;;
+  esac
+done < <(json_value '.result.process_info.foreground_processes[]?.pid' <<<"$process_json")
+
+if [ -z "$current_profile" ]; then
+  case "$agent" in
+    codex)
+      if [ -L "$HOME/.codex" ]; then
+        default_home="$(readlink -f "$HOME/.codex" 2>/dev/null || true)"
+        case "$default_home" in
+          "$PROFILES_ROOT"/*) current_profile="${default_home#"$PROFILES_ROOT"/}"; current_profile="${current_profile%%/*}" ;;
+        esac
+      fi
+      ;;
+    claude)
+      current_profile="$(claude-session-profile "$session_id" 2>/dev/null || true)"
+      ;;
+  esac
+fi
+
+choose_profile() {
+  if [ -n "${HERDR_SWITCH_PROFILE:-}" ]; then
+    printf '%s\n' "$HERDR_SWITCH_PROFILE"
+    return
+  fi
+
+  local rows=() profile label selected
+  for profile in "${profiles[@]}"; do
+    label=""
+    [ "$profile" = "$current_profile" ] && label=" (atual)"
+    rows+=("$profile$label")
+  done
+
+  if command -v fzf >/dev/null 2>&1; then
+    selected="$(printf '%s\n' "${rows[@]}" | fzf \
+      --prompt="Assinatura $agent_label > " --reverse --no-multi \
+      --header="Sessão $session_id")" || return 1
+    printf '%s\n' "${selected%% *}"
+    return
+  fi
+
+  printf 'Escolha o profile %s:\n' "$agent_label" >/dev/tty
+  select selected in "${profiles[@]}"; do
+    [ -n "$selected" ] && { printf '%s\n' "$selected"; return; }
+  done </dev/tty >/dev/tty
+}
+
+target_profile="$(choose_profile)" || exit 0
+valid_target=false
+for profile in "${profiles[@]}"; do
+  [ "$profile" = "$target_profile" ] && valid_target=true
+done
+[ "$valid_target" = true ] || fail "profile '$target_profile' não existe ou não está configurado."
+
+if [ "$target_profile" = "$current_profile" ]; then
+  printf "A sessão já está no profile '%s'.\n" "$target_profile"
+  exit 0
+fi
+
+find_latest_codex_rollout() {
+  local newest="" newest_mtime=-1 file mtime
+  while IFS= read -r -d '' file; do
+    mtime="$(stat -c '%Y' "$file" 2>/dev/null || printf '0')"
+    if [ "$mtime" -gt "$newest_mtime" ]; then
+      newest="$file"
+      newest_mtime="$mtime"
+    fi
+  done < <(find "$PROFILES_ROOT" -type f \
+    \( -path '*/sessions/*' -o -path '*/archived_sessions/*' \) \
+    -name "*-${session_id}.jsonl" -print0 2>/dev/null)
+  printf '%s\n' "$newest"
+}
+
+rollout=""
+if [ "$agent" = "codex" ]; then
+  rollout="$(find_latest_codex_rollout)"
+  [ -n "$rollout" ] || fail "não encontrei o rollout local da sessão $session_id."
+else
+  target_projects="$PROFILES_ROOT/$target_profile/projects"
+  target_transcript="$(find -L "$target_projects" -type f -name "$session_id.jsonl" -print -quit 2>/dev/null)"
+  [ -n "$target_transcript" ] \
+    || fail "o profile '$target_profile' não enxerga o transcript compartilhado desta sessão."
+fi
+
+printf "Trocando %s '%s' → '%s'...\n" "$agent_label" "${current_profile:-desconhecido}" "$target_profile"
+"$HERDR_BIN" pane send-text "$PANE_ID" "$exit_command" >/dev/null
+"$HERDR_BIN" pane send-keys "$PANE_ID" enter >/dev/null
+
+# Do not start the target while the source still owns the conversation file.
+exited=false
+for _ in $(seq 1 150); do
+  process_json="$("$HERDR_BIN" pane process-info --pane "$PANE_ID" 2>/dev/null || true)"
+  if ! jq -e --arg process "$process_name" \
+      '[.result.process_info.foreground_processes[]? | ((.name // "") + " " + (.cmdline // "")) | test("(^|[/ ])" + $process + "($| )")] | any' \
+      >/dev/null <<<"$process_json"; then
+    exited=true
+    break
+  fi
+  sleep 0.1
+done
+[ "$exited" = true ] || fail "o $agent_label não encerrou em 15s; não iniciei uma segunda cópia."
+
+if [ "$agent" = "codex" ]; then
+  rollout="$(find_latest_codex_rollout)"
+  [ -n "$rollout" ] || fail "o rollout desapareceu depois do $exit_command."
+  relative="${rollout#"$PROFILES_ROOT"/}"
+  relative="${relative#*/}"
+  bucket="${relative%%/*}"
+  tail_path="${relative#*/}"
+  case "$bucket" in
+    sessions|archived_sessions) ;;
+    *) fail "caminho de rollout inesperado: $rollout" ;;
+  esac
+
+  target="$PROFILES_ROOT/$target_profile/$bucket/$tail_path"
+  mkdir -p "$(dirname "$target")"
+  if [ ! "$rollout" -ef "$target" ] 2>/dev/null; then
+    if [ -e "$target" ] && ! cmp -s "$rollout" "$target"; then
+      backup_dir="$PROFILES_ROOT/$target_profile/cache/herdr-session-handoff-backups"
+      mkdir -p "$backup_dir"
+      cp -p -- "$target" "$backup_dir/${session_id}-$(date +%Y%m%d-%H%M%S).jsonl"
+    fi
+    temporary="$target.herdr-handoff.$$"
+    rm -f -- "$temporary"
+    if ! ln -- "$rollout" "$temporary" 2>/dev/null; then
+      cp -p -- "$rollout" "$temporary"
+    fi
+    mv -f -- "$temporary" "$target"
+  fi
+
+  printf -v home_q '%q' "$PROFILES_ROOT/$target_profile"
+  printf -v session_q '%q' "$session_id"
+  resume_command="env CODEX_HOME=$home_q codex resume $session_q"
+else
+  if ! claude-session-profile set "$session_id" "$target_profile"; then
+    fail "não consegui persistir o novo profile Claude; a sessão ficou fechada para evitar restore na conta errada."
+  fi
+  printf -v self_q '%q' "$SELF_PATH"
+  printf -v profile_q '%q' "$target_profile"
+  printf -v session_q '%q' "$session_id"
+  resume_command="$self_q --resume-claude $profile_q $session_q"
+fi
+
+if ! "$HERDR_BIN" pane run "$PANE_ID" "$resume_command" >/dev/null; then
+  printf 'A sessão foi preparada, mas o resume automático falhou. Rode no pane:\n  %s\n' "$resume_command" >&2
+  pause_on_error
+  exit 1
+fi
+
+printf "%s retomando com o profile '%s'.\n" "$agent_label" "$target_profile"

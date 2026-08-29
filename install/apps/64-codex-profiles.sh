@@ -27,6 +27,23 @@ if [ "$profile_is_listed" != true ]; then
   exit 1
 fi
 
+# Reparo, antes de qualquer coisa: um .json compartilhado de zero byte NÃO é JSON
+# válido, e quem for lê-lo morre em "EOF while parsing a value at line 1 column
+# 0". Foi assim que o `herdr integration install codex` do módulo 67 falhou. Vem
+# antes do already_configured de propósito: aquele teste só olha se os symlinks
+# apontam para o lugar certo, então uma máquina com o arquivo quebrado sairia
+# cedo por "já configurado" e ficaria quebrada para sempre.
+for item in "${SHARED_ITEMS[@]}"; do
+  case "$item" in
+    *.json)
+      if [ -f "$SHARED/$item" ] && [ ! -s "$SHARED/$item" ]; then
+        printf '{}\n' >"$SHARED/$item"
+        echo "[ezomar][codex-profiles] $item estava vazio e não era JSON válido; semeado com {}."
+      fi
+      ;;
+  esac
+done
+
 already_configured() {
   local profile item target
   [ -d "$SHARED" ] || return 1
@@ -80,12 +97,27 @@ for item in "${SHARED_ITEMS[@]}"; do
     mv "$src" "$SHARED/$item"
     echo "[ezomar][codex-profiles] Compartilhado: $item."
   fi
-  if [ ! -e "$SHARED/$item" ]; then
-    case "$item" in
-      *.toml|*.json) : >"$SHARED/$item" ;;
-      *) mkdir -p "$SHARED/$item" ;;
-    esac
-  fi
+  # Semear o placeholder certo importa: um .json de zero byte NÃO é JSON válido, e
+  # quem for lê-lo morre em "EOF while parsing a value at line 1 column 0". Foi
+  # exatamente assim que o `herdr integration install codex` do módulo 67 falhou.
+  # Um .toml vazio, ao contrário, é um documento TOML válido.
+  #
+  # O reparo também vale para arquivo que já existe: um .json vazio no disco veio
+  # de uma execução anterior deste módulo e continua quebrado até alguém escrever
+  # nele. Conserta em vez de deixar a máquina num estado que só falha depois.
+  case "$item" in
+    *.json)
+      if [ ! -e "$SHARED/$item" ] || [ ! -s "$SHARED/$item" ]; then
+        printf '{}\n' >"$SHARED/$item"
+      fi
+      ;;
+    *.toml)
+      [ -e "$SHARED/$item" ] || : >"$SHARED/$item"
+      ;;
+    *)
+      [ -e "$SHARED/$item" ] || mkdir -p "$SHARED/$item"
+      ;;
+  esac
 done
 
 for profile in $PROFILES; do

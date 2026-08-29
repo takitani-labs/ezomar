@@ -11,7 +11,7 @@ COLLIE_REPO="https://github.com/AltanS/collie.git"
 COLLIE_REPO_DIR="$HOME/work/repos/references/collie"
 
 if ! command -v herdr >/dev/null 2>&1; then
-  echo "[ezomar][collie] herdr não encontrado. Pulando (o ezomar não instala o herdr)."
+  echo "[ezomar][collie] herdr não encontrado. Pulando."
   exit 0
 fi
 if ! command -v bun >/dev/null 2>&1; then

@@ -3,8 +3,8 @@ set -euo pipefail
 
 # O herdr restaura cwd, agente e sessionId, mas não o CLAUDE_CONFIG_DIR de cada
 # pane. Sem este helper, panes de perfis diferentes voltam todos no perfil
-# padrão. O binário deriva sessionId -> perfil dos history.jsonl e alimenta o
-# snippet zsh que o chezmoi já restaura.
+# padrão. O binário deriva sessionId -> perfil dos history.jsonl, guarda trocas
+# explícitas feitas no Herdr e alimenta o snippet zsh que o chezmoi já restaura.
 #
 # O módulo instala apenas o binário e gera o cache derivado; não toca no snippet
 # nem nos diretórios de perfil pertencentes ao chezmoi.

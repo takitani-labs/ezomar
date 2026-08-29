@@ -63,6 +63,12 @@ echo "[ezomar][verify] Agentes"
 for t in herdr codex gemini grok ai-usagebar pw-keepalive cli-proxy-api pidbox; do
   command -v "$t" >/dev/null 2>&1 && ok "$t" || bad "$t ausente"
 done
+[ -x "$HOME/.local/bin/herdr-switch-agent-profile" ] \
+  && ok "seletor de profile Codex/Claude do herdr" \
+  || bad "herdr-switch-agent-profile ausente"
+grep -q '^# >>> herdr agent profile switch (ezdora/ezomar) >>>$' \
+  "$HOME/.config/herdr/config.toml" 2>/dev/null \
+  && ok "atalho Ctrl+B, A do herdr" || bad "keybinding de troca de profile ausente"
 if systemctl --user cat herdr.service >/dev/null 2>&1; then
   systemctl --user is-enabled herdr.service >/dev/null 2>&1 \
     && ok "herdr.service habilitado" || bad "herdr.service existe mas não está habilitado"

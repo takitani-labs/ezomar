@@ -434,7 +434,7 @@ for f in "$HOME"/.local/bin/*; do
   case "$head" in '#!'*sh|'#!'*sh\ *|'#!'*bash*|'#!'*zsh*) ;; *) continue ;; esac
   BIN_N=$(( BIN_N + 1 ))
   case "${f##*/}" in
-    bw|chezmoi|cli-proxy-api|ai-usagebar*|pidbox|mrig|pw-keepalive|claude-session-profile)
+    bw|chezmoi|cli-proxy-api|ai-usagebar*|pidbox|mrig|pw-keepalive|claude-session-profile|herdr-switch-agent-profile)
       BIN_KNOWN=$(( BIN_KNOWN + 1 )) ;;                      # um módulo do ezomar reinstala
     distrobox-*|jetbrains-toolbox|activate-global-python-argcomplete)
       BIN_KNOWN=$(( BIN_KNOWN + 1 )) ;;                      # vem de pacote

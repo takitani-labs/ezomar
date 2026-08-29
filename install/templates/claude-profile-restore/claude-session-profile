@@ -1,20 +1,31 @@
 #!/usr/bin/env bash
-# Mapeia uma sessão do Claude Code para o perfil que a criou.
+# Maps a Claude Code session id to the profile that created it.
+# Installed by the ezdora/ezomar Claude profile restore module.
 #
-#   build   reconstrói o cache a partir do history.jsonl de cada perfil
-#   <uuid>  imprime o perfil dono da sessão, ou vazio quando desconhecido
+#   build                  rebuild the cache from every profile's history.jsonl
+#   set <uuid> <profile>   persist an intentional in-flight profile switch
+#   <uuid>                 print the effective profile (empty if unknown)
+#
+# The base map is derived: every profile keeps its own
+# ~/.claude-profiles/<p>/history.jsonl and every line carries a sessionId, so
+# the owner falls out of which file the id appears in. Nothing needs to hook
+# into Claude Code for this to work.
+#
+# First occurrence wins, not the last. A session that came back under the wrong
+# profile starts appending to that profile's history, so "last one wins" would
+# let a bad restore rewrite the very answer we need. The birth profile is the
+# stable fact. An explicit override made by the Herdr profile switch wins over
+# that birth profile and survives future restores.
 
 set -uo pipefail
 
 CACHE="${CLAUDE_SESSION_PROFILE_CACHE:-$HOME/.local/state/claude-session-profile.tsv}"
+OVERRIDES="${CLAUDE_SESSION_PROFILE_OVERRIDES:-$HOME/.claude/session-profile-overrides.tsv}"
 
 build() {
   mkdir -p "$(dirname "$CACHE")"
   python3 - "$CACHE" <<'PY'
-import glob
-import json
-import os
-import sys
+import json, glob, os, sys
 
 out = sys.argv[1]
 first = {}
@@ -26,40 +37,88 @@ for path in glob.glob(os.path.expanduser("~/.claude-profiles/*/history.jsonl")):
         continue
     with handle:
         for line in handle:
+            # Cheap prefilter: these files reach hundreds of MB.
             if '"sessionId"' not in line:
                 continue
             try:
                 entry = json.loads(line)
             except Exception:
                 continue
-            session_id = entry.get("sessionId")
-            if not session_id:
+            sid = entry.get("sessionId")
+            if not sid:
                 continue
-            timestamp = entry.get("timestamp") or 0
-            current = first.get(session_id)
-            if current is None or timestamp < current[0]:
-                first[session_id] = (timestamp, profile)
+            ts = entry.get("timestamp") or 0
+            current = first.get(sid)
+            if current is None or ts < current[0]:
+                first[sid] = (ts, profile)
 
 tmp = out + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
-    for session_id, (_, profile) in first.items():
-        handle.write(f"{session_id}\t{profile}\n")
-os.replace(tmp, out)
-print(f"{len(first)} sessões mapeadas -> {out}", file=sys.stderr)
+    for sid, (_, profile) in first.items():
+        handle.write(f"{sid}\t{profile}\n")
+os.replace(tmp, out)   # atomic, so a concurrent lookup never sees a half file
+print(f"{len(first)} sessions mapped -> {out}", file=sys.stderr)
 PY
 }
 
+lookup_file() {
+  awk -F'\t' -v s="$2" '$1 == s { print $2; exit }' "$1" 2>/dev/null
+}
+
 lookup() {
-  awk -F'\t' -v s="$1" '$1 == s { print $2; exit }' "$CACHE" 2>/dev/null
+  local result
+  result="$(lookup_file "$OVERRIDES" "$1")"
+  [ -n "$result" ] && { printf '%s' "$result"; return; }
+  lookup_file "$CACHE" "$1"
+}
+
+set_profile() {
+  local session_id="$1" profile="$2"
+  [[ "$session_id" =~ ^[[:alnum:]_-]+$ ]] || { echo "invalid session id" >&2; return 2; }
+  [[ "$profile" =~ ^[[:alnum:]_.-]+$ ]] || { echo "invalid profile" >&2; return 2; }
+  [ -d "${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}/$profile" ] \
+    || { echo "Claude profile not found: $profile" >&2; return 1; }
+  mkdir -p "$(dirname "$OVERRIDES")"
+  python3 - "$OVERRIDES" "$session_id" "$profile" <<'PY'
+import os, sys
+
+path, session_id, profile = sys.argv[1:]
+entries = {}
+try:
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            parts = line.rstrip("\n").split("\t", 1)
+            if len(parts) == 2:
+                entries[parts[0]] = parts[1]
+except FileNotFoundError:
+    pass
+entries[session_id] = profile
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    for sid, selected in sorted(entries.items()):
+        handle.write(f"{sid}\t{selected}\n")
+os.replace(tmp, path)
+PY
 }
 
 case "${1:-}" in
   build|"")
     build
     ;;
+  set)
+    [ "$#" -eq 3 ] || { echo "usage: claude-session-profile set <uuid> <profile>" >&2; exit 2; }
+    set_profile "$2" "$3"
+    ;;
   *)
+    if result="$(lookup_file "$OVERRIDES" "$1")" && [ -n "$result" ]; then
+      printf '%s' "$result"
+      exit 0
+    fi
     [ -f "$CACHE" ] || build 2>/dev/null
     result="$(lookup "$1")"
+    # A session started after the last build is not in the cache yet. Rebuild
+    # once and retry, so a fresh pane resolves on its first restore instead of
+    # the one after.
     if [ -z "$result" ]; then
       build 2>/dev/null
       result="$(lookup "$1")"
