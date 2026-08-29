@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Bridge ai-usagebar's provider-neutral quota output into Omarchy's native
+# per-record contract. For deterministic tests without credentials, pass
+# --from-file PATH or set EZOMAR_AI_USAGEBAR_FROM_FILE=PATH. Set
+# EZOMAR_AI_USAGEBAR_BIN to override the live collector executable.
+
+REAL_HOME="$HOME"
+USAGE_DIR="${XDG_STATE_HOME:-$REAL_HOME/.local/state}/omarchy/agents/usage"
+CONFIG_FILE="${EZOMAR_AI_USAGEBAR_CONFIG:-$REAL_HOME/.config/ai-usagebar/config.toml}"
+AI_USAGEBAR_BIN="${EZOMAR_AI_USAGEBAR_BIN:-ai-usagebar}"
+FROM_FILE="${EZOMAR_AI_USAGEBAR_FROM_FILE:-}"
+WORK_DIR=""
+declare -A SEEN_FILENAMES=()
+
+say() { echo "[ezomar][agent-usage] $*"; }
+cleanup() {
+  if [ -n "$WORK_DIR" ]; then
+    rm -rf -- "$WORK_DIR"
+  fi
+}
+trap cleanup EXIT
+
+usage() {
+  cat <<'EOF'
+Uso: ezomar-agent-usage-ai-usagebar [--from-file ARQUIVO]
+
+Sem --from-file, lê `ai-usagebar usage --json`. Para testes sem chaves,
+EZOMAR_AI_USAGEBAR_FROM_FILE também aceita um payload JSON já capturado.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --from-file)
+      if [ "$#" -lt 2 ]; then
+        say "--from-file exige um caminho." >&2
+        exit 2
+      fi
+      FROM_FILE="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      say "Argumento desconhecido: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Missing configuration and binaries are expected before private dotfiles and
+# credentials arrive, so the periodic service must remain successfully quiet.
+if [ -z "$FROM_FILE" ]; then
+  if [ ! -f "$CONFIG_FILE" ] || ! command -v "$AI_USAGEBAR_BIN" >/dev/null 2>&1; then
+    exit 0
+  fi
+elif [ ! -f "$FROM_FILE" ]; then
+  say "Payload de teste ausente: $FROM_FILE" >&2
+  exit 1
+fi
+
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ezomar-ai-usagebar.XXXXXX")"
+SOURCE_JSON="$WORK_DIR/usage.json"
+if [ -n "$FROM_FILE" ]; then
+  cp -- "$FROM_FILE" "$SOURCE_JSON"
+elif ! "$AI_USAGEBAR_BIN" usage --json >"$SOURCE_JSON"; then
+  say "O backend ai-usagebar falhou; mantendo os últimos registros válidos." >&2
+  exit 1
+fi
+
+if ! jq -e 'type == "object" and (.entries | type == "array")' \
+  "$SOURCE_JSON" >/dev/null 2>&1; then
+  say "O backend ai-usagebar retornou JSON inválido; mantendo os últimos registros válidos." >&2
+  exit 1
+fi
+
+mkdir -p "$USAGE_DIR"
+while IFS= read -r entry; do
+  id="$(jq -r 'if (.id | type) == "string" then .id else "" end' <<<"$entry")"
+  [ -n "$id" ] || continue
+
+  case "${id,,}" in
+    anthropic|openai)
+      # Module 65's native collectors provide authoritative per-account limits
+      # for these vendors, so an aggregate source would create misleading tabs.
+      continue
+      ;;
+  esac
+
+  has_error="$(jq -r '.error != null' <<<"$entry")"
+  if [ "$has_error" = true ]; then
+    error="$(jq -r 'if (.error | tostring) == "" then "erro sem detalhes" else (.error | tostring) end' <<<"$entry")"
+    say "$id: $error; mantendo o último registro válido." >&2
+    continue
+  fi
+
+  filename_id="$(printf '%s' "$id" \
+    | tr '[:upper:]_' '[:lower:]-' \
+    | sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+  [ -n "$filename_id" ] || continue
+  transformed="$WORK_DIR/$filename_id.json"
+  now="$(date --utc +'%Y-%m-%dT%H:%M:%SZ')"
+  if ! jq -ce --arg now "$now" '
+      {
+        schemaVersion: 1,
+        id: .id,
+        name: (if (.display_name | type) == "string" and .display_name != "" then .display_name else .id end),
+        updatedAt: (if (.fetched_at | type) == "string" and .fetched_at != "" then .fetched_at else $now end),
+        ready: true,
+        hasLocalStats: false,
+        hasPromptStats: false,
+        scope: "account",
+        tierLabel: (if (.plan | type) == "string" then .plan else "" end),
+        usageStatusText: "",
+        authHelpText: "",
+        limits: [
+          (.metrics // [])[]
+          | select(type == "object")
+          | select((.label | type) == "string" and .label != "" and (.percent | type) == "number")
+          | {
+              label: .label,
+              percent: .percent,
+              resetsAt: (if (.reset_at | type) == "string" then .reset_at else null end)
+            }
+        ],
+        todayPrompts: 0,
+        todaySessions: 0,
+        todayTotalTokens: 0,
+        todayTokensByModel: {},
+        recentDays: [],
+        totalPrompts: 0,
+        totalSessions: 0,
+        activeDays: 0,
+        activeDates: [],
+        modelUsage: {}
+      }
+      | select(.limits | length > 0)
+      | if (
+          (.id | type) == "string" and .id != ""
+          and (.name | type) == "string"
+          and (.tierLabel | type) == "string"
+          and (.limits | type) == "array" and (.limits | length > 0)
+          and (all(.limits[]; (.label | type) == "string"
+            and (.percent | type) == "number"
+            and ((.resetsAt | type) == "string" or .resetsAt == null)))
+          and .hasLocalStats == false
+          and .hasPromptStats == false
+          and .totalPrompts == 0
+          and .totalSessions == 0
+        ) then . else error("record is outside the native contract") end
+    ' <<<"$entry" >"$transformed" 2>"$WORK_DIR/$filename_id.jq-stderr"; then
+    # An empty metrics list is a normal provider state and has nothing the
+    # native panel can display; malformed candidates likewise stay unpublished.
+    continue
+  fi
+
+  if [ -n "${SEEN_FILENAMES[$filename_id]:-}" ]; then
+    say "$id: outro provider gerou o mesmo nome de arquivo; nenhum registro adicional foi publicado." >&2
+    continue
+  fi
+  SEEN_FILENAMES[$filename_id]=1
+
+  # Prefixing the filename avoids every target owned by Omarchy's updater.
+  # The fully validated file is copied to a same-filesystem temporary and mv
+  # is the sole destination operation, so readers can never observe a partial.
+  target="$USAGE_DIR/ezomar-ai-usagebar-$filename_id.json"
+  tmp="$(mktemp "$USAGE_DIR/.ezomar-ai-usagebar-$filename_id.XXXXXX")"
+  chmod 0600 "$tmp"
+  if ! cp -- "$transformed" "$tmp" || ! mv -f -- "$tmp" "$target"; then
+    rm -f -- "$tmp"
+    say "$id: não foi possível publicar o registro." >&2
+    exit 1
+  fi
+  say "$(jq -r '.name' "$transformed") atualizado via ai-usagebar."
+done < <(jq -c '.entries[] | select(type == "object")' "$SOURCE_JSON")

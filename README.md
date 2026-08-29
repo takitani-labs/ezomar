@@ -80,6 +80,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `56-herdr.sh` | instala o herdr pelo instalador oficial e habilita o unit, se os dotfiles o trouxeram |
 | `58-npm-ai-clis.sh` | `codex`, `gemini` e `grok` via npm, em `~/.npm-global` |
 | `60-cliproxyapi.sh` | instala a API local para as subscriptions de IA, sua config secreta e unit de usuário |
+| `61-ai-usagebar.sh` | instala só o binário ai-usagebar, usado como backend de quotas pelo painel nativo |
 | `62-cliproxyapi-exato.sh` | cria a segunda instância do CLIProxyAPI para a conta Codex de trabalho |
 | `64-codex-profiles.sh` | separa as contas do Codex CLI por `CODEX_HOME` e compartilha a configuração |
 | `65-agent-usage-accounts.sh` | abre uma aba por conta Claude/Codex no painel nativo de agentes do Omarchy |
@@ -240,19 +241,24 @@ os próprios drop-ins (`*/ezomar-oom-guard.conf`). O mesmo vale para
 `~/.config/ai-usagebar/config.toml`, que carrega chaves de API, e para o symlink
 `projects/` de cada perfil do Claude: o `90-verify.sh` reclama se faltarem.
 
-**A barra de uso do KDE.** A máquina primária mostrava o consumo das
+**Uma segunda barra de uso.** A máquina primária mostrava o consumo das
 subscriptions num plasmoide alimentado por um fork do ai-usagebar. O fork não
-tinha nenhum commit próprio, e no Omarchy nada disso é mais necessário: o widget
-nativo `omarchy.agents` já vem na barra padrão, e o módulo 65 abre uma aba por
-conta nele. O módulo que instalava o medidor do Akita foi removido em
-2026-08-29; ele cobria providers que o nativo não cobre (Z.AI, OpenRouter, Kimi,
-Grok), então se um dia esses passarem a importar, ele está no histórico do git.
+tinha nenhum commit próprio, e o widget duplicava o painel nativo
+`omarchy.agents`, então nenhum plugin, plasmoide ou módulo de barra é instalado.
+O binário ai-usagebar sobrevive apenas como backend: no mesmo timer de 15 minutos
+do módulo 65, uma ponte transforma Z.AI, Kimi, Grok, OpenRouter, DeepSeek e
+qualquer outro provider configurado em abas nativas. Anthropic e OpenAI são
+ignorados nessa ponte porque os coletores do próprio Omarchy já entregam limites
+mais autoritativos por conta.
 
 Uma peculiaridade do nativo que confunde: o widget se esconde da barra enquanto
-nenhuma conta tiver uso. O `providerHasData()` do plugin exige
-`totalPrompts > 0` ou `totalSessions > 0`, então numa máquina recém-instalada,
-ou numa VM de ensaio sem login, ele simplesmente não aparece. Não está quebrado,
-está vazio.
+nenhuma conta tiver dados. Além de prompts, sessões e dias ativos,
+`providerHasData()` também aceita `limits[]` não vazio ou saldo; por isso uma
+subscription que só expõe quota aparece normalmente. Para testar a ponte sem
+chaves reais, rode
+`ezomar-agent-usage-ai-usagebar --from-file /caminho/payload.json` ou defina
+`EZOMAR_AI_USAGEBAR_FROM_FILE` com o mesmo caminho. `XDG_STATE_HOME` pode apontar
+para um diretório temporário durante o ensaio.
 
 ## Aresta conhecida: `.claude/settings.json`
 

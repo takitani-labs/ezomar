@@ -5,6 +5,7 @@ REAL_HOME="$HOME"
 OMARCHY_ROOT="${OMARCHY_PATH:-/usr/share/omarchy}"
 USAGE_DIR="${XDG_STATE_HOME:-$REAL_HOME/.local/state}/omarchy/agents/usage"
 CACHE_ROOT="${XDG_CACHE_HOME:-$REAL_HOME/.cache}/ezomar/agent-usage-accounts"
+USAGEBAR_BRIDGE="${EZOMAR_AI_USAGEBAR_BRIDGE:-$REAL_HOME/.local/bin/ezomar-agent-usage-ai-usagebar}"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ezomar-agent-usage.XXXXXX")"
 STATUS=0
 declare -A SEEN_IDS=()
@@ -159,5 +160,12 @@ collect_vendor() {
 
 collect_vendor claude "Claude" "$REAL_HOME/.claude-profiles" "$REAL_HOME/.claude"
 collect_vendor codex "Codex" "$REAL_HOME/.codex-profiles" "$REAL_HOME/.codex"
+
+# The same timer owns both sources. Keeping ai-usagebar behind this fan-out
+# preserves a single refresh lifecycle and prevents competing services from
+# publishing into the native panel on slightly different schedules.
+if [ -x "$USAGEBAR_BRIDGE" ] && ! "$USAGEBAR_BRIDGE"; then
+  STATUS=1
+fi
 
 exit "$STATUS"

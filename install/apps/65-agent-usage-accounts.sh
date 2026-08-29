@@ -9,13 +9,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TPL="$SCRIPT_DIR/../templates/agent-usage-accounts"
 BIN="$HOME/.local/bin/ezomar-agent-usage-accounts"
+USAGEBAR_BRIDGE="$HOME/.local/bin/ezomar-agent-usage-ai-usagebar"
 USER_UNITS="$HOME/.config/systemd/user"
 SERVICE="ezomar-agent-usage-accounts.service"
 TIMER="ezomar-agent-usage-accounts.timer"
 
 say() { echo "[ezomar][agent-usage] $*"; }
 
-for file in ezomar-agent-usage-accounts "$SERVICE" "$TIMER"; do
+for file in ezomar-agent-usage-accounts ezomar-agent-usage-ai-usagebar "$SERVICE" "$TIMER"; do
   if [ ! -f "$TPL/$file" ]; then
     say "Template ausente: $TPL/$file" >&2
     exit 1
@@ -30,6 +31,7 @@ for command in jq realpath; do
 done
 
 install -D -m 0755 "$TPL/ezomar-agent-usage-accounts" "$BIN"
+install -D -m 0755 "$TPL/ezomar-agent-usage-ai-usagebar" "$USAGEBAR_BRIDGE"
 install -D -m 0644 "$TPL/$SERVICE" "$USER_UNITS/$SERVICE"
 install -D -m 0644 "$TPL/$TIMER" "$USER_UNITS/$TIMER"
 
