@@ -59,7 +59,16 @@ collect_profile() {
     return
   fi
   SEEN_IDS[$id]=1
-  name="$vendor_name · $(profile_label "$profile")"
+  # O nome é curto de propósito. A fileira de abas do painel é um Row que divide
+  # a largura igualmente entre os providers (Panel.qml:467), sem quebra e sem
+  # rolagem, então cada aba a mais encolhe todas. "Claude · Papi Max" já era
+  # cortado com quatro abas. EZOMAR_AGENT_NAME_LONG=true traz o prefixo de volta
+  # para quem tem poucas contas.
+  if [ "${EZOMAR_AGENT_NAME_LONG:-}" = "true" ]; then
+    name="$vendor_name · $(profile_label "$profile")"
+  else
+    name="$(profile_label "$profile")"
+  fi
 
   # pi, omp and opencode live below HOME/XDG_DATA_HOME and carry no account
   # owner. A private HOME per account makes the upstream collector see only
@@ -137,13 +146,23 @@ collect_profile() {
 
 collect_vendor() {
   local vendor="$1" vendor_name="$2" profiles_root="$3" default_dir="$4"
-  local profile_dir default_real profile_real
+  local profile_dir default_real profile_real profile_name
 
   default_real="$(realpath -m -- "$default_dir")"
   for profile_dir in "$profiles_root"/*; do
     [ -d "$profile_dir" ] || continue
     if [ "$vendor" = codex ] && [ "$(basename -- "$profile_dir")" = shared ]; then
       continue
+    fi
+    # Nem toda conta precisa de aba. Com cinco contas Claude, mais Codex, Kimi e
+    # Z.AI, o Row do painel fica com dez células e nenhuma legível. A lista
+    # escolhe quais entram; vazia significa todas.
+    if [ -n "${EZOMAR_AGENT_PROFILES:-}" ]; then
+      profile_name="$(basename -- "$profile_dir")"
+      case " $EZOMAR_AGENT_PROFILES " in
+        *" $profile_name "*) ;;
+        *) continue ;;
+      esac
     fi
     profile_real="$(realpath -m -- "$profile_dir")"
     # Omarchy continually owns claude.json/codex.json for the default target.
