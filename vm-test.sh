@@ -67,6 +67,7 @@ declare -A NOTE=(
   [20-age-key.sh]="exige o Bitwarden destravado NA VM (bw login && bw unlock)"
   [30-chezmoi.sh]="exige a chave age do 20 e uma chave SSH com acesso ao repo privado"
   [40-claude-plugins.sh]="marketplaces e plugins; sai limpo se o claude não estiver no PATH"
+  [45-webapps.sh]="remove os web apps do Omarchy que esta máquina não usa"
   [50-personal.sh]="no-op enquanto o chezmoi não trouxer ~/.config/ezomar/apps"
   [56-herdr.sh]="instalador oficial; o unit é dos dotfiles, aqui só entra o binário"
   [58-npm-ai-clis.sh]="npm global em ~/.npm-global; logins ficam para depois"

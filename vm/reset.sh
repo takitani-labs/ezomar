@@ -15,14 +15,29 @@ set -euo pipefail
 
 VM_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 NAME="${EZOMAR_VM_NAME:-ezomar-vm}"
+STORAGE="${EZOMAR_VM_STORAGE:-$VM_DIR/storage}"
 
 say() { echo "[ezomar][reset] $*"; }
 
+# Três caminhos, porque o dono dos arquivos depende de como a VM foi usada: o
+# container os cria como root, mas quem passou pelo vm/qemu-direct.sh já teve de
+# tomar posse deles. Antes isto só sabia o primeiro caminho e, com o container
+# parado, dizia "nada a apagar" sem apagar nada.
+TARGETS=(data.img uefi.vars screen.ppm qemu-direct.pid qemu-direct.qmp)
 if docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
   say "Apagando disco e NVRAM de dentro do container..."
-  docker exec "$NAME" sh -c 'rm -f /storage/data.img /storage/uefi.vars /storage/screen.ppm' || true
+  docker exec "$NAME" sh -c "cd /storage && rm -f ${TARGETS[*]}" || true
+elif [ -w "$STORAGE" ]; then
+  # Testar o DIRETÓRIO, não os arquivos: unlink exige escrita no diretório que
+  # contém, e o vm/storage é criado pelo container como root. Um arquivo seu
+  # dentro de um diretório do root continua impossível de apagar, e o teste
+  # errado fazia o reset dizer que apagou sem ter apagado nada.
+  say "Apagando disco e NVRAM direto..."
+  ( cd "$STORAGE" && rm -f "${TARGETS[@]}" ) || true
 else
-  say "Container parado; nada a apagar de dentro dele."
+  say "Os arquivos são do root e o container está parado; apagando por um container descartável..."
+  docker run --rm -v "$STORAGE:/s" alpine sh -c "cd /s && rm -f ${TARGETS[*]}" >/dev/null 2>&1 \
+    || say "Não consegui apagar. Rode à mão: sudo rm -f $STORAGE/{data.img,uefi.vars}" >&2
 fi
 
 cd "$VM_DIR"

@@ -82,8 +82,17 @@ fi
 command -v qemu-system-x86_64 >/dev/null 2>&1 || die "qemu-system-x86_64 não encontrado."
 [ -e /dev/kvm ] && [ -w /dev/kvm ] || die "/dev/kvm inacessível."
 [ -f "$DISK" ] || die "disco não encontrado: $DISK (a VM já foi instalada pelo container?)"
-[ -w "$DISK" ] || die "sem permissão de escrita em $DISK. O container o cria como root; ajuste com:
-  docker run --rm -v \"$STORAGE:/s\" alpine chown $(id -u):$(id -g) /s/data.img /s/uefi.vars"
+# O container cria o disco como root, e trocar de motor não pode virar um ritual
+# manual: se não dá para escrever, toma posse por um container descartável, que
+# é justamente o privilégio que falta aqui fora.
+if [ ! -w "$DISK" ]; then
+  if command -v docker >/dev/null 2>&1; then
+    say "O disco é do root (foi o container que criou); tomando posse..."
+    docker run --rm -v "$STORAGE:/s" alpine \
+      chown "$(id -u):$(id -g)" /s/data.img /s/uefi.vars >/dev/null 2>&1 || true
+  fi
+  [ -w "$DISK" ] || die "sem permissão de escrita em $DISK, e não consegui ajustar sozinho."
+fi
 [ -f "$OVMF_CODE" ] || die "firmware UEFI não encontrado: $OVMF_CODE"
 
 if pid="$(running_pid)"; then

@@ -76,6 +76,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `30-chezmoi.sh` | instala o chezmoi e aplica os dotfiles |
 | `35-shell.sh` | `chsh` para zsh, depois do chezmoi ter entregue o `.zshrc` |
 | `40-claude-plugins.sh` | marketplaces e os 10 plugins do Claude Code |
+| `45-webapps.sh` | remove os web apps que o Omarchy instala e esta máquina não usa |
 | `50-personal.sh` | roda seus módulos privados, se houver |
 | `56-herdr.sh` | instala o herdr pelo instalador oficial e habilita o unit, se os dotfiles o trouxeram |
 | `58-npm-ai-clis.sh` | `codex`, `gemini` e `grok` via npm, em `~/.npm-global` |
@@ -339,13 +340,33 @@ O motor é o [qemux/qemu](https://github.com/qemus/qemu): QEMU com KVM dentro de
 um container, UEFI, e a tela servida no browser. Não é preciso libvirt nem
 cliente de VNC no host.
 
+São **dois motores, com papéis diferentes**, e confundi-los custa tempo:
+
+| | Instalar | Usar |
+|---|---|---|
+| Script | `vm/up.sh` (container qemux) | `vm/qemu-direct.sh` (QEMU direto) |
+| Tela | browser em `http://localhost:8007` | `remote-viewer spice://127.0.0.1:5902` |
+| GPU | não, em host AMD (ver abaixo) | sim, virgl |
+| Por que | é o único que anexa o drive de autoinstall | é o único com GL, então é o único usável |
+
+Nunca os dois ao mesmo tempo: disputariam o mesmo disco, e o `qemu-direct` se
+recusa a subir se achar o container de pé. O ciclo completo:
+
 ```bash
 bash vm/autoinstall.sh      # gera o drive de instalação desatendida
-bash vm/up.sh               # sobe a VM com o ISO mais recente do ~/Downloads
-                            # tela em http://localhost:8007
-bash vm/prepare-guest.sh    # sudo sem senha e rsync, depois que instalar
+bash vm/up.sh               # instala sozinho (~4 min; é offline, vem tudo do ISO)
+bash vm/prepare-guest.sh    # sudo sem senha e host key do github, depois de instalar
 ./vm-test.sh                # roda os módulos lá dentro, e resume o que passou
+
+docker stop ezomar-vm       # e, para de fato USAR a VM:
+bash vm/qemu-direct.sh      # mesmo disco, com GPU
+remote-viewer spice://127.0.0.1:5902
 ```
+
+Para recomeçar do zero: `bash vm/reset.sh --up`. Ele apaga o disco e a NVRAM
+seja qual for o dono dos arquivos e o motor em uso, o que não era verdade até
+descobrirmos que ele dizia "disco apagado" sem apagar nada quando o container
+estava parado.
 
 A instalação é desatendida porque o instalador do Omarchy aceita um drive
 rotulado `cidata` (o rótulo do NoCloud do cloud-init) com os mesmos arquivos que
