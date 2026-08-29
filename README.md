@@ -335,21 +335,36 @@ negando tudo, e o ensaio começa digitando comandos na GUI da VM.
 | `vm/prepare-guest.sh` | libera sudo sem senha na VM e garante o rsync |
 | `vm/console.sh` | print da tela e envio de teclas pelo monitor do QEMU |
 | `vm/reset.sh` | apaga disco e NVRAM de dentro do container, sem sudo no host |
+| `vm/qemu-direct.sh` | sobe a mesma VM sem o container, com GPU de verdade (SPICE) |
 
-O `vm/up.sh` liga a aceleração de GPU quando o host tem `/dev/dri`, mas há uma
-ressalva medida nesta máquina: o `qemux/qemu` **desabilita a aceleração quando o
-host tem CPU AMD** (`isAmdCpu` no `/run/display.sh` dele), então num Ryzen a
-variável não tem efeito e o guest renderiza por software. O sintoma não é só
-lentidão: o Hyprland por llvmpipe deixa regiões sem repintar e, pelo VNC, isso
-vira retângulos pretos. A saída é no guest, e vale só para a VM:
+O `vm/up.sh` liga a aceleração quando o host tem `/dev/dri`, mas há uma ressalva
+medida nesta máquina: o `qemux/qemu` **desabilita a aceleração quando o host tem
+CPU AMD** (`isAmdCpu` no `/run/display.sh` dele), então num Ryzen a variável não
+tem efeito e o guest cai em llvmpipe. O sintoma não é só lentidão: o Hyprland por
+software deixa regiões sem repintar, e pelo VNC isso vira retângulos pretos.
 
-```lua
--- em ~/.config/hypr/looknfeel.lua, dentro da VM
-hl.config({ debug = { damage_tracking = 0 } })
+É para isso que existe o `vm/qemu-direct.sh`: ele sobe **o mesmo disco** sem o
+container, chamando o QEMU direto com `virtio-vga-gl` e `egl-headless` sobre o
+render node do host, e servindo SPICE. Medido no guest depois da troca:
+
+```
+[drm] features: +virgl +edid
 ```
 
-Isso redesenha o quadro inteiro sempre. Custa CPU e não faz sentido numa máquina
-com GPU de verdade, que é o caso da máquina real.
+```bash
+docker stop ezomar-vm            # os dois usariam o mesmo disco
+bash vm/qemu-direct.sh
+remote-viewer spice://127.0.0.1:5902
+bash vm/qemu-direct.sh --stop    # desligamento ACPI, não SIGKILL
+```
+
+Duas armadilhas que custaram tempo e estão resolvidas no script. O firmware UEFI
+é um **par**: parear o `OVMF_CODE.fd` do host (1,9M) com a NVRAM de 4M que o
+container gravou deixa o guest em "Display output is not active", então o script
+reusa o `uefi.rom` do próprio storage, que é o par certo e preserva a entrada de
+boot do Limine. E o `screendump` do QMP não funciona com `egl-headless`, porque o
+framebuffer vive na GPU; para inspecionar a tela por script, use o caminho do
+container.
 
 O `vm-test.sh` leva a árvore de trabalho por rsync, não um clone do GitHub, então
 o que é testado é o que está no disco agora, mudanças não commitadas incluídas.
