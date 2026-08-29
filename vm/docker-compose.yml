@@ -22,6 +22,10 @@ services:
       RAM_SIZE: "${EZOMAR_VM_RAM:-8G}"
       CPU_CORES: "${EZOMAR_VM_CPUS:-6}"
       DISK_SIZE: "${EZOMAR_VM_DISK:-64G}"
+      # Sem isto o guest cai no llvmpipe, e o Hyprland renderizando por software
+      # produz artefatos de redraw: retângulos pretos e regiões que nunca são
+      # repintadas, além da lentidão. O up.sh liga quando o host tem /dev/dri.
+      GPU: "${EZOMAR_VM_GPU:-N}"
     devices:
       - /dev/kvm
       - /dev/net/tun

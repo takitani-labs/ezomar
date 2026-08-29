@@ -58,6 +58,21 @@ say "VM:   $NAME  ${EZOMAR_VM_RAM:-8G} RAM, ${EZOMAR_VM_CPUS:-6} vCPU, disco ${E
 # O autoinstall é opcional: existindo o drive, a VM instala sozinha; não
 # existindo, sobe o assistente interativo na tela.
 COMPOSE=(-f docker-compose.yml)
+
+# Aceleração: o Omarchy roda o Hyprland como compositor até na tela de login, e
+# sem GPU ele cai no llvmpipe, que além de lento redesenha errado (retângulos
+# pretos que só somem ao passar outra janela por cima). Com /dev/dri no host, o
+# qemux expõe virgl e o guest ganha GL de verdade.
+if [ "${EZOMAR_VM_GPU:-}" = "N" ]; then
+  say "GPU desligada por EZOMAR_VM_GPU=N."
+elif [ -e /dev/dri/renderD128 ]; then
+  COMPOSE+=(-f gpu.yml)
+  export EZOMAR_VM_GPU=Y
+  say "GPU: /dev/dri encontrado, aceleração ligada."
+else
+  say "GPU: sem /dev/dri neste host; o guest vai renderizar por software."
+fi
+
 if [ -f "$VM_DIR/cidata.img" ]; then
   COMPOSE+=(-f cidata.yml)
   say "Autoinstall: cidata.img presente, a instalação roda sem intervenção."

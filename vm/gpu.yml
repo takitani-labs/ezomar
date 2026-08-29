@@ -1,0 +1,7 @@
+# Passa a GPU do host para o container, para o guest ter virgl em vez de
+# llvmpipe. Override separado porque o compose não sabe montar um device
+# condicionalmente, e uma máquina sem /dev/dri falharia ao subir.
+services:
+  omarchy:
+    devices:
+      - /dev/dri

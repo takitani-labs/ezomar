@@ -320,6 +320,21 @@ negando tudo, e o ensaio começa digitando comandos na GUI da VM.
 | `vm/console.sh` | print da tela e envio de teclas pelo monitor do QEMU |
 | `vm/reset.sh` | apaga disco e NVRAM de dentro do container, sem sudo no host |
 
+O `vm/up.sh` liga a aceleração de GPU quando o host tem `/dev/dri`, mas há uma
+ressalva medida nesta máquina: o `qemux/qemu` **desabilita a aceleração quando o
+host tem CPU AMD** (`isAmdCpu` no `/run/display.sh` dele), então num Ryzen a
+variável não tem efeito e o guest renderiza por software. O sintoma não é só
+lentidão: o Hyprland por llvmpipe deixa regiões sem repintar e, pelo VNC, isso
+vira retângulos pretos. A saída é no guest, e vale só para a VM:
+
+```lua
+-- em ~/.config/hypr/looknfeel.lua, dentro da VM
+hl.config({ debug = { damage_tracking = 0 } })
+```
+
+Isso redesenha o quadro inteiro sempre. Custa CPU e não faz sentido numa máquina
+com GPU de verdade, que é o caso da máquina real.
+
 O `vm-test.sh` leva a árvore de trabalho por rsync, não um clone do GitHub, então
 o que é testado é o que está no disco agora, mudanças não commitadas incluídas.
 
