@@ -251,6 +251,22 @@ qualquer outro provider configurado em abas nativas. Anthropic e OpenAI são
 ignorados nessa ponte porque os coletores do próprio Omarchy já entregam limites
 mais autoritativos por conta.
 
+O painel tem um limite prático que vale saber antes de jogar sete contas nele: a
+fileira de abas é um `Row` que divide a largura igualmente entre os providers
+(`Panel.qml:467`), sem quebra de linha e sem rolagem, então cada aba a mais
+encolhe todas. Com quatro abas o rótulo "Claude · Papi Max" já saía cortado. Por
+isso o nome padrão é curto, só o rótulo do perfil, e dá para escolher quais
+contas viram aba:
+
+```bash
+EZOMAR_AGENT_PROFILES="team-max papi-max exato" ezomar-agent-usage-accounts
+EZOMAR_AGENT_NAME_LONG=true ezomar-agent-usage-accounts   # devolve o prefixo do vendor
+```
+
+Se a intenção for ver as sete ao mesmo tempo e legíveis, o painel nativo não dá
+conta: o medidor do Akita listava na vertical e escalava melhor nesse ponto. É a
+troca real entre os dois.
+
 Uma peculiaridade do nativo que confunde: o widget se esconde da barra enquanto
 nenhuma conta tiver dados. Além de prompts, sessões e dias ativos,
 `providerHasData()` também aceita `limits[]` não vazio ou saldo; por isso uma
