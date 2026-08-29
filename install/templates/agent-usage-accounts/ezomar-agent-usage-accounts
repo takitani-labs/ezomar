@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_HOME="$HOME"
+OMARCHY_ROOT="${OMARCHY_PATH:-/usr/share/omarchy}"
+USAGE_DIR="${XDG_STATE_HOME:-$REAL_HOME/.local/state}/omarchy/agents/usage"
+CACHE_ROOT="${XDG_CACHE_HOME:-$REAL_HOME/.cache}/ezomar/agent-usage-accounts"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ezomar-agent-usage.XXXXXX")"
+STATUS=0
+declare -A SEEN_IDS=()
+
+say() { echo "[ezomar][agent-usage] $*"; }
+cleanup() { rm -rf -- "$WORK_DIR"; }
+trap cleanup EXIT
+
+mkdir -p "$USAGE_DIR" "$CACHE_ROOT"
+
+profile_label() {
+  local profile="$1" word label=""
+  local -a words=()
+  profile="${profile//_/-}"
+  IFS=- read -r -a words <<<"$profile"
+  for word in "${words[@]}"; do
+    [ -n "$word" ] || continue
+    label+=" ${word^}"
+  done
+  printf '%s\n' "${label# }"
+}
+
+profile_id() {
+  local vendor="$1" profile="$2" normalized
+  normalized="$(printf '%s' "$profile" \
+    | tr '[:upper:]_' '[:lower:]-' \
+    | sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+  [ -n "$normalized" ] || return 1
+  printf '%s-%s\n' "$vendor" "$normalized"
+}
+
+collect_profile() {
+  local vendor="$1" vendor_name="$2" profile_dir="$3"
+  local profile collector id name account_root raw transformed target tmp
+
+  profile="$(basename -- "$profile_dir")"
+  collector="$OMARCHY_ROOT/bin/omarchy-agent-usage-$vendor"
+  if [ ! -x "$collector" ]; then
+    say "Coletor ausente ou não executável: $collector" >&2
+    STATUS=1
+    return
+  fi
+  if ! id="$(profile_id "$vendor" "$profile")"; then
+    say "Nome de perfil sem ID utilizável: $profile" >&2
+    STATUS=1
+    return
+  fi
+  if [ -n "${SEEN_IDS[$id]:-}" ]; then
+    say "Perfis distintos geraram o mesmo ID '$id'; nenhum será sobrescrito." >&2
+    STATUS=1
+    return
+  fi
+  SEEN_IDS[$id]=1
+  name="$vendor_name · $(profile_label "$profile")"
+
+  # pi, omp and opencode live below HOME/XDG_DATA_HOME and carry no account
+  # owner. A private HOME per account makes the upstream collector see only
+  # the explicitly selected native profile, instead of charging those global
+  # trees to every subscription. Keeping the private cache per ID also stops
+  # one account's cached rate limits from leaking into another account.
+  account_root="$CACHE_ROOT/$id"
+  mkdir -p "$account_root/home" "$account_root/cache" "$account_root/data"
+  raw="$WORK_DIR/$id.raw"
+  if [ "$vendor" = claude ]; then
+    if ! HOME="$account_root/home" \
+      XDG_CACHE_HOME="$account_root/cache" \
+      XDG_DATA_HOME="$account_root/data" \
+      CLAUDE_CONFIG_DIR="$profile_dir" \
+      "$collector" >"$raw" 2>"$WORK_DIR/$id.stderr"; then
+      say "$vendor_name · $profile: o coletor falhou; mantendo o último registro válido." >&2
+      STATUS=1
+      return
+    fi
+  else
+    if ! HOME="$account_root/home" \
+      XDG_CACHE_HOME="$account_root/cache" \
+      XDG_DATA_HOME="$account_root/data" \
+      CODEX_HOME="$profile_dir" \
+      "$collector" >"$raw" 2>"$WORK_DIR/$id.stderr"; then
+      say "$vendor_name · $profile: o coletor falhou; mantendo o último registro válido." >&2
+      STATUS=1
+      return
+    fi
+  fi
+
+  # Custom IDs make the panel create one tab per account, but the plugin only
+  # ships assets/claude.svg and assets/codex.svg: account tabs deliberately
+  # lose the vendor icon in exchange for distinct, readable identities.
+  transformed="$WORK_DIR/$id.json"
+  if ! jq -ce --arg vendor "$vendor" --arg id "$id" --arg name "$name" '
+      if (
+        type == "object"
+        and .id == $vendor
+        and (.name | type == "string")
+        and (.ready | type == "boolean")
+        and (.hasLocalStats | type == "boolean")
+        and (.limits | type == "array")
+        and (.recentDays | type == "array")
+        and (.activeDates | type == "array")
+        and (.modelUsage | type == "object")
+        and (.schemaVersion != null)
+        and (.updatedAt | type == "string")
+      ) then
+        .id = $id | .name = $name
+      else
+        error("collector record is outside the expected contract")
+      end
+    ' "$raw" >"$transformed" 2>"$WORK_DIR/$id.jq-stderr"; then
+    say "$vendor_name · $profile: JSON inválido ou fora do contrato; mantendo o último registro válido." >&2
+    STATUS=1
+    return
+  fi
+
+  # Account files use names Omarchy's own updater never targets, so a later
+  # native update leaves them alone. Validation happens before mktemp, and mv
+  # is the only operation on the destination, so failure or logout can never
+  # expose a partial JSON record to the panel.
+  target="$USAGE_DIR/$id.json"
+  tmp="$(mktemp "$USAGE_DIR/.$id.XXXXXX")"
+  chmod 0600 "$tmp"
+  if ! cp -- "$transformed" "$tmp" || ! mv -f -- "$tmp" "$target"; then
+    rm -f -- "$tmp"
+    say "$vendor_name · $profile: não foi possível publicar o registro." >&2
+    STATUS=1
+    return
+  fi
+  say "$name atualizado."
+}
+
+collect_vendor() {
+  local vendor="$1" vendor_name="$2" profiles_root="$3" default_dir="$4"
+  local profile_dir default_real profile_real
+
+  default_real="$(realpath -m -- "$default_dir")"
+  for profile_dir in "$profiles_root"/*; do
+    [ -d "$profile_dir" ] || continue
+    if [ "$vendor" = codex ] && [ "$(basename -- "$profile_dir")" = shared ]; then
+      continue
+    fi
+    profile_real="$(realpath -m -- "$profile_dir")"
+    # Omarchy continually owns claude.json/codex.json for the default target.
+    # Skipping the same real profile avoids a duplicate tab without deleting,
+    # rewriting or racing upstream files; the tradeoff is that the default tab
+    # keeps Omarchy's generic vendor name and its vendor icon.
+    if [ "$profile_real" = "$default_real" ]; then
+      say "$vendor_name · $(basename -- "$profile_dir") é o perfil padrão; o registro nativo já o representa."
+      continue
+    fi
+    collect_profile "$vendor" "$vendor_name" "$profile_dir"
+  done
+}
+
+collect_vendor claude "Claude" "$REAL_HOME/.claude-profiles" "$REAL_HOME/.claude"
+collect_vendor codex "Codex" "$REAL_HOME/.codex-profiles" "$REAL_HOME/.codex"
+
+exit "$STATUS"

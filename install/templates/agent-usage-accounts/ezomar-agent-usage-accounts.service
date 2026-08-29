@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh Omarchy agent usage for every AI account
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ezomar-agent-usage-accounts

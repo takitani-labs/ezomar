@@ -83,6 +83,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `61-ai-usagebar.sh` | medidor de uso das subscriptions (upstream do Akita): instala, habilita e põe na barra |
 | `62-cliproxyapi-exato.sh` | cria a segunda instância do CLIProxyAPI para a conta Codex de trabalho |
 | `64-codex-profiles.sh` | separa as contas do Codex CLI por `CODEX_HOME` e compartilha a configuração |
+| `65-agent-usage-accounts.sh` | abre uma aba por conta Claude/Codex no painel nativo de agentes do Omarchy |
 | `66-claude-profile-restore.sh` | instala o mapa de sessão para o herdr restaurar cada pane no perfil Claude correto |
 | `67-herdr-integrations.sh` | instala os hooks oficiais de session id em todos os profiles Claude e no Codex |
 | `68-pidbox.sh` | opt-in: guard de namespace de PID contra `kill(-1)` de suítes de teste |
@@ -246,12 +247,12 @@ tinha nenhum commit próprio, então no Omarchy entra o upstream do Akita direto
 (`61-ai-usagebar.sh`), com o plugin nativo dele como interface.
 
 O Omarchy 4 tem um widget próprio para isso, o `omarchy.agents`, e ele já vem na
-barra padrão. Ele não substitui o módulo aqui: o coletor dele lê
-`CLAUDE_CONFIG_DIR` ou `~/.claude`, e `CODEX_HOME` ou `~/.codex`, ou seja, uma
-conta de cada. Esta máquina tem cinco contas Claude e duas Codex, mais Kimi,
-Gemini e Grok. Os dois convivem na barra: o nativo mostra a conta ativa, o do
-Akita mostra a frota. Se um dia uma conta bastar, o módulo 61 sai e o nativo
-resolve sozinho.
+barra padrão. O módulo 65 aproveita o contrato público desse plugin e regenera
+um registro por perfil Claude/Codex a cada 15 minutos, sem alterar o Omarchy; o
+perfil padrão continua no registro nativo dele para não aparecer duas vezes.
+Esta máquina tem cinco contas Claude e duas Codex, mais Kimi, Gemini e Grok. O
+medidor do Akita continua ao lado porque também cobre providers e proxies fora
+dos coletores nativos.
 
 ## Aresta conhecida: `.claude/settings.json`
 

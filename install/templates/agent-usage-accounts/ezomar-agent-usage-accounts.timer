@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically refresh Omarchy agent usage for every AI account
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+RandomizedDelaySec=30s
+AccuracySec=30s
+Persistent=true
+Unit=ezomar-agent-usage-accounts.service
+
+[Install]
+WantedBy=timers.target
