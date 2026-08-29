@@ -463,6 +463,18 @@ fi
 # --- 12. Docker ---------------------------------------------------------------------
 # Volumes are the reason this section exists: a named volume is usually a
 # database, and it is the one thing here that neither git nor the tarball holds.
+section "Inodes do /tmp (o limite que trava a máquina antes de o disco encher)"
+if IT="$(df -i /tmp 2>/dev/null | awk 'NR==2{print $2}')" && [ -n "$IT" ]; then
+  IP="$(df -i /tmp 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')"
+  info "teto $IT, uso ${IP}%"
+  # Quem consome, e não é o total: um scratchpad de sessão com um venv dentro
+  # come centenas de milhares de inodes sozinho.
+  for d in /tmp/*/; do
+    n="$(find "$d" 2>/dev/null | wc -l)"
+    [ "$n" -gt 20000 ] && info "$(printf '%8d' "$n")  ${d}"
+  done
+fi
+
 section "Docker (dados de banco moram em volume)"
 DOCKER=(docker)
 command -v timeout >/dev/null 2>&1 && DOCKER=(timeout 5 docker)

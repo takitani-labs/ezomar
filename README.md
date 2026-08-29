@@ -95,6 +95,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `78-pw-keepalive.sh` | daemon que mantém as sessões do 1Password e Bitwarden vivas |
 | `80-oom-guard.sh` | sysrq e reserva de root; os limites de cgroup são opt-in |
 | `82-watchdog.sh` | opt-in: arma o watchdog de hardware em 60s |
+| `84-tmp-inodes.sh` | sobe o teto de inodes do `/tmp`, que trava a máquina antes de o disco encher |
 | `90-verify.sh` | confere o estado final e lista o que falta |
 
 **A ordem entre 20, 30 e 35 é obrigatória.** Sem a chave age, o chezmoi aplica os
@@ -213,6 +214,35 @@ systemctl --user show herdr.service -p MemoryCurrent --value
 Ficou de fora de vez: o earlyoom (o Omarchy escolheu o oomd por PSI e o rejeita
 nos próprios comentários) e o swapfile em btrfs (o zram do Omarchy já ocupa a RAM
 inteira).
+
+## O teto de inodes do `/tmp`
+
+Aconteceu nesta máquina em 2026-08-29 e vale entender, porque não se parece com
+o que é. O `/tmp` é tmpfs e o systemd o monta com `nr_inodes=1m`: um teto fixo de
+1.048.576 arquivos que **não acompanha a RAM**. Com 123G de memória e 21G ainda
+livres no `/tmp`, o sistema parou de conseguir criar arquivo: o `mount.cifs` do
+NAS parou de montar, e até um `echo` para um arquivo falhava com `ENOSPC`. Não
+faltava espaço, faltava inode.
+
+A causa é o uso: uma única sessão de agente tinha 246.972 arquivos e 10G ali,
+incluindo um venv Python inteiro. Em tmpfs, esses 10G também são 10G de RAM.
+
+O `84-tmp-inodes.sh` sobe o teto para 4m, reescrevendo a linha `Options=` inteira
+do `tmp.mount` (num `.mount` do systemd o `Options=` substitui, não acrescenta, e
+perder o `mode=1777` no caminho quebraria a máquina) e remontando na hora, sem
+reboot. O Omarchy tem exatamente o mesmo padrão, conferido numa VM 4.0.1.
+
+Isso é rede de segurança. A correção da causa seria mandar os artefatos pesados
+para fora do tmpfs, e aí esbarra num limite do Claude Code: **a raiz do scratchpad
+não é configurável** (sem `TMPDIR`, sem chave de settings, sem flag; verificado na
+documentação oficial). Como o scratchpad não sai do `/tmp`, resta a opção mais
+radical, atrás de `EZOMAR_TMP_ON_DISK=true`: mascarar o `tmp.mount` e deixar o
+`/tmp` no disco. Em btrfs o inode é alocado dinamicamente, o teto some, e um venv
+de 10G para de ocupar memória. O preço é a velocidade do tmpfs, que num NVMe é
+pequeno perto de perder 10G de RAM.
+
+O `90-verify.sh` e o `preformat.sh` passaram a reportar o uso e quem consome,
+para o limite ser visível antes de ser atingido.
 
 ## O que ele não faz
 

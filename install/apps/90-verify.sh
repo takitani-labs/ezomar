@@ -86,6 +86,19 @@ else
 fi
 
 echo "[ezomar][verify] Resiliência"
+# O teto de inodes do /tmp é o limite que ninguém olha até ele parar a máquina:
+# num tmpfs cheio de arquivo pequeno o espaço sobra e o inode acaba, e aí nada
+# consegue criar arquivo, nem o mount.cifs de um NAS. Medido aqui em 2026-08-29.
+if IT="$(df -i /tmp 2>/dev/null | awk 'NR==2{print $2}')" && [ -n "$IT" ]; then
+  IP="$(df -i /tmp 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')"
+  if [ "$IT" -gt 1048576 ]; then
+    ok "teto de inodes do /tmp: $IT (uso ${IP}%)"
+  elif [ "${IP:-0}" -ge 60 ]; then
+    bad "/tmp em ${IP}% dos inodes, com teto padrão de $IT (rode install/apps/84-tmp-inodes.sh)"
+  else
+    ok "inodes do /tmp em ${IP}% (teto padrão $IT)"
+  fi
+fi
 [ "$(cat /proc/sys/kernel/sysrq)" = "1" ] && ok "kernel.sysrq=1" || bad "kernel.sysrq=$(cat /proc/sys/kernel/sysrq) (Alt+SysRq+F indisponível)"
 [ -f "$HOME/.config/systemd/user/session.slice.d/ezomar-oom-guard.conf" ] \
   && ok "session.slice MemoryMin" || bad "drop-in do session.slice ausente"
