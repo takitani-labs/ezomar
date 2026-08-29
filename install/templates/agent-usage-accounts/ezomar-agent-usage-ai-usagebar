@@ -124,7 +124,12 @@ while IFS= read -r entry; do
           | select((.label | type) == "string" and .label != "" and (.percent | type) == "number")
           | {
               label: .label,
-              percent: .percent,
+              # Escala, e não cosmética: o contrato nativo guarda FRAÇÃO de 0 a 1
+              # (normalize_utilization devolve min(1.0, n/100.0), e o painel
+              # trata >= 0.9 como alarme), enquanto o ai-usagebar reporta 0 a
+              # 100, com o campo `value` dizendo "30%". Sem dividir, uma cota de
+              # 4% aparecia como 400% e pintava a barra inteira de vermelho.
+              percent: ([[.percent / 100, 0] | max, 1] | min),
               resetsAt: (if (.reset_at | type) == "string" then .reset_at else null end)
             }
         ],
@@ -146,7 +151,7 @@ while IFS= read -r entry; do
           and (.tierLabel | type) == "string"
           and (.limits | type) == "array" and (.limits | length > 0)
           and (all(.limits[]; (.label | type) == "string"
-            and (.percent | type) == "number"
+            and (.percent | type) == "number" and .percent >= 0 and .percent <= 1
             and ((.resetsAt | type) == "string" or .resetsAt == null)))
           and .hasLocalStats == false
           and .hasPromptStats == false
