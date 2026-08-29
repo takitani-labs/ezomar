@@ -71,7 +71,6 @@ declare -A NOTE=(
   [56-herdr.sh]="instalador oficial; o unit é dos dotfiles, aqui só entra o binário"
   [58-npm-ai-clis.sh]="npm global em ~/.npm-global; logins ficam para depois"
   [60-cliproxyapi.sh]="gera a própria chave local, então fecha sozinho; falta só o login de subscription"
-  [61-ai-usagebar.sh]="AUR (ai-usagebar-bin) ou cargo; é o módulo mais demorado"
   [62-cliproxyapi-exato.sh]="exige ~/.claude-profiles/codex-exato/settings.json, que só o chezmoi entrega"
   [64-codex-profiles.sh]="cria os homes e symlinks; avisa do snippet zsh ausente sem falhar"
   [66-claude-profile-restore.sh]="instala o helper; sem ~/.claude-profiles o mapa sai vazio"

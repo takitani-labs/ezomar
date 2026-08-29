@@ -80,7 +80,6 @@ Rodam em ordem de nome, e a numeração importa.
 | `56-herdr.sh` | instala o herdr pelo instalador oficial e habilita o unit, se os dotfiles o trouxeram |
 | `58-npm-ai-clis.sh` | `codex`, `gemini` e `grok` via npm, em `~/.npm-global` |
 | `60-cliproxyapi.sh` | instala a API local para as subscriptions de IA, sua config secreta e unit de usuário |
-| `61-ai-usagebar.sh` | medidor de uso das subscriptions (upstream do Akita): instala, habilita e põe na barra |
 | `62-cliproxyapi-exato.sh` | cria a segunda instância do CLIProxyAPI para a conta Codex de trabalho |
 | `64-codex-profiles.sh` | separa as contas do Codex CLI por `CODEX_HOME` e compartilha a configuração |
 | `65-agent-usage-accounts.sh` | abre uma aba por conta Claude/Codex no painel nativo de agentes do Omarchy |
@@ -243,16 +242,17 @@ os próprios drop-ins (`*/ezomar-oom-guard.conf`). O mesmo vale para
 
 **A barra de uso do KDE.** A máquina primária mostrava o consumo das
 subscriptions num plasmoide alimentado por um fork do ai-usagebar. O fork não
-tinha nenhum commit próprio, então no Omarchy entra o upstream do Akita direto
-(`61-ai-usagebar.sh`), com o plugin nativo dele como interface.
+tinha nenhum commit próprio, e no Omarchy nada disso é mais necessário: o widget
+nativo `omarchy.agents` já vem na barra padrão, e o módulo 65 abre uma aba por
+conta nele. O módulo que instalava o medidor do Akita foi removido em
+2026-08-29; ele cobria providers que o nativo não cobre (Z.AI, OpenRouter, Kimi,
+Grok), então se um dia esses passarem a importar, ele está no histórico do git.
 
-O Omarchy 4 tem um widget próprio para isso, o `omarchy.agents`, e ele já vem na
-barra padrão. O módulo 65 aproveita o contrato público desse plugin e regenera
-um registro por perfil Claude/Codex a cada 15 minutos, sem alterar o Omarchy; o
-perfil padrão continua no registro nativo dele para não aparecer duas vezes.
-Esta máquina tem cinco contas Claude e duas Codex, mais Kimi, Gemini e Grok. O
-medidor do Akita continua ao lado porque também cobre providers e proxies fora
-dos coletores nativos.
+Uma peculiaridade do nativo que confunde: o widget se esconde da barra enquanto
+nenhuma conta tiver uso. O `providerHasData()` do plugin exige
+`totalPrompts > 0` ou `totalSessions > 0`, então numa máquina recém-instalada,
+ou numa VM de ensaio sem login, ele simplesmente não aparece. Não está quebrado,
+está vazio.
 
 ## Aresta conhecida: `.claude/settings.json`
 
