@@ -203,8 +203,51 @@ step_session() {
     || die "session.json não contém uma frota v3 não vazia."
 }
 
+# Medido no ensaio em VM, e é a razão de esta checagem existir: quando o herdr
+# sobe e o cwd de um pane não existe, ele não apenas cai no $HOME naquele boot,
+# ele REESCREVE o session.json com o fallback. No ensaio os 99 panes de agente
+# colapsaram dos seus repos (30 em dd-intelligence, 14 em atta, ...) para um
+# único /home/opik, e o vínculo entre pane e repo sumiu de vez: os transcripts
+# continuam no disco sob o slug do caminho antigo, e nada mais aponta para eles.
+# Logo, um restore-repos incompleto não pode chegar a este passo.
+assert_pane_cwds() {
+  local session="$HOME/.config/herdr/session.json"
+  local total missing cwd
+  command -v jq >/dev/null 2>&1 || { say "jq ausente; não dá para conferir os cwd." >&2; return 0; }
+
+  mapfile -t ALL_CWDS < <(jq -r '[.. | objects | select(has("cwd") and has("agent_session")) | .cwd] | .[]' "$session" 2>/dev/null)
+  total=${#ALL_CWDS[@]}
+  [ "$total" -gt 0 ] || { say "Nenhum pane com sessão de agente no índice."; return 0; }
+
+  missing=0
+  declare -A MISSING_COUNT=()
+  for cwd in "${ALL_CWDS[@]}"; do
+    [ -n "$cwd" ] || continue
+    if [ ! -d "$cwd" ]; then
+      missing=$((missing + 1))
+      MISSING_COUNT["$cwd"]=$(( ${MISSING_COUNT["$cwd"]:-0} + 1 ))
+    fi
+  done
+
+  if [ "$missing" -eq 0 ]; then
+    say "Todos os $total cwd de pane existem."
+    return 0
+  fi
+
+  say "$missing de $total panes apontam para diretórios que não existem:" >&2
+  for cwd in "${!MISSING_COUNT[@]}"; do
+    say "  ${MISSING_COUNT[$cwd]} pane(s) em $cwd" >&2
+  done
+  say "Subir o herdr agora grava esses fallbacks por cima do índice, e o vínculo" >&2
+  say "entre pane e repo some para sempre. Termine o restore-repos antes." >&2
+  [ "${EZOMAR_ALLOW_MISSING_CWDS:-}" = "true" ] \
+    || die "recusando iniciar o herdr com cwd faltando (EZOMAR_ALLOW_MISSING_CWDS=true força)."
+  say "EZOMAR_ALLOW_MISSING_CWDS=true: seguindo mesmo assim, por sua conta." >&2
+}
+
 step_start_herdr() {
   [ -s "$HOME/.config/herdr/session.json" ] || die "recusando iniciar herdr.service sem session.json."
+  assert_pane_cwds
   if [ -L "$HERDR_GUARD" ] && [ "$(readlink "$HERDR_GUARD")" = /dev/null ]; then
     rm -- "$HERDR_GUARD"
   else
