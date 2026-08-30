@@ -251,11 +251,16 @@ para o limite ser visível antes de ser atingido.
 lista isso no fim.
 
 **A primeira chave SSH.** O repo de dotfiles é privado e as chaves estão dentro
-dele, o que é circular. A primeira tem que vir da máquina primária:
+dele, o que é circular. No dia da troca ela vem primeiro do tarball, antes do
+`install.sh`:
 
 ```bash
-scp ~/.ssh/id_rsa ~/.ssh/id_rsa.pub <máquina-nova>:.ssh/
+EZOMAR_BACKUP_ONLY='.ssh .gnupg' bash backup/restore-ai.sh <ezomar-ai-....tar.zst>
 ```
+
+O restore consulta o chezmoi mesmo nessa passagem curta e recusa continuar se o
+binário não estiver disponível. `backup/format-day.sh` instala apenas esse
+binário quando necessário e conduz a ordem completa.
 
 **Os `run_once_after_*` do chezmoi.** São pulados de propósito com
 `--exclude=scripts`: três dependem do 1Password logado e dois chamam
@@ -452,6 +457,66 @@ bash preformat.sh --fix    # chezmoi add/re-add, commit e push do source, e reco
 O `--fix` só mexe no chezmoi. Ele não commita o seu trabalho, não faz push dele e
 não roda o backup: essas decisões são suas.
 
+### Fase 1: enquanto a frota continua rodando
+
+A preparação não exige derrubar os 14 workspaces. Faça os itens que reduzem o
+risco aos poucos:
+
+1. Use o `backup-ai.sh` atualizado. Ele agora leva `.config/herdr`,
+   `.local/state/herdr` e `.config/systemd/user`, mas não os plugins, logs,
+   sockets nem snapshots de crash regeneráveis. Por padrão também pula o banco
+   SQLite vivo de 10 GB do OpenCode; `EZOMAR_SKIP_OPENCODE_DB=false` opta por
+   carregá-lo, com o custo e o risco de consistência explicados no script.
+2. Adicione `~/.config/systemd/user/herdr.service` e
+   `herdr.service.d/claude-profile.conf` ao repo privado do chezmoi. O tarball é
+   a rede de segurança; os dotfiles continuam sendo a origem durável dos units.
+3. Tire snapshots horários do índice. O comando abaixo cria um timer transitório
+   para a sessão atual; versione units equivalentes no chezmoi para fazê-lo
+   sobreviver a logouts e reinstalações:
+
+   ```bash
+   systemd-run --user --unit=ezomar-herdr-snapshot \
+     --on-calendar=hourly --timer-property=Persistent=true \
+     "$PWD/backup/snapshot-herdr-session.sh"
+   ```
+
+4. Capture tudo que um clone perderia, sem parar agentes e sem tocar no
+   histórico dos repos:
+
+   ```bash
+   bash backup/backup-wip.sh       # commits sem remote, stash, patch e untracked
+   ```
+
+5. Use o relatório para limpar conscientemente os 57 repos sujos, enviar os 42
+   conjuntos de commits sem remote e decidir o destino dos 4 repos sem remote.
+   O tarball de WIP é recuperação, não substituto para organizar e publicar o
+   trabalho que já pode ser publicado.
+
+### Fase 2: a única parada da frota
+
+Quando a fase anterior estiver verde, pare o herdr uma vez, faça o tarball final
+e o WIP final, confira os checksums, copie os quatro arquivos (`.tar.zst` e
+`.sha256` de cada backup) para o NAS ou outro desktop e só então formate:
+
+```bash
+systemctl --user stop herdr.service
+bash backup/backup-ai.sh
+bash backup/backup-wip.sh
+(cd ~/backups && sha256sum -c ezomar-ai-*.sha256 ezomar-wip-*.sha256)
+# rsync -P os tarballs e checksums para fora desta máquina
+```
+
+Na máquina Omarchy nova, o roteiro interativo guarda checkpoints e retoma da
+etapa interrompida. Ele para separadamente para `bw unlock`, `ops`, login do
+Claude e `codex login`, verifica cada um, mantém `herdr.service` mascarado e só o
+inicia depois que repos, WIP, módulo 66 e `session.json` estiverem no lugar:
+
+```bash
+EZOMAR_AI_BACKUP=/mnt/nas/ezomar-ai-....tar.zst \
+EZOMAR_WIP_BACKUP=/mnt/nas/ezomar-wip-....tar.zst \
+  bash backup/format-day.sh
+```
+
 ## O que o chezmoi não carrega, e o `backup/` carrega
 
 Os dotfiles guardam a configuração durável. Duas coisas ficam de fora de
@@ -466,20 +531,30 @@ propósito, e o `backup/` existe para elas:
 
 ```bash
 bash backup/backup-ai.sh          # gera ~/backups/ezomar-ai-<data>.tar.zst + sha256
-bash backup/restore-ai.sh <tar>   # na máquina nova, depois do install.sh
+bash backup/backup-wip.sh         # WIP que um reclone não consegue trazer
+bash backup/restore-ai.sh <tar>   # mescla sem sobrescrever o que já existe
 bash backup/restore-repos.sh      # reclona os repos nos mesmos caminhos
+bash backup/restore-wip.sh <tar>  # reaplica sem force; conflito vira relatório
 ```
 
 O tarball **não é encriptado** e carrega chave privada: ele viaja por ssh ou
 tailscale para uma máquina sua, e para lugar nenhum além disso.
 
-Duas decisões que valem entender. O backup pergunta ao **chezmoi**, na hora de
+Quatro decisões que valem entender. O backup pergunta ao **chezmoi**, na hora de
 rodar, o que já é gerenciado, e exclui isso do tarball; assim `~/.claude` entra
 sem as skills e sem o `settings.json`, sem que ninguém precise manter uma segunda
-lista que envelhece calada. E o restore move de lado **apenas os caminhos exatos**
-que vai restaurar, nunca as raízes que os contêm: mover `~/.config` para extrair
-`.config/opencode` apagaria em silêncio o `hypr/`, o `waybar/` e todo o resto que
-o Omarchy acabou de escrever.
+lista que envelhece calada. O restore pergunta de novo e preserva os arquivos e
+symlinks gerenciados, sem confundir os diretórios ancestrais que o comando também
+lista com propriedade da árvore inteira; se a consulta falhar, ele aborta em vez
+de adivinhar. Uma passagem sem `--force` aceita a lista vazia do bootstrap porque
+continua preservando tudo que já existe; `--force` exige o source inicializado. E
+uma restauração forçada guarda **apenas cada folha exata** que substitui, nunca
+as raízes que as contêm: mover `~/.config` para extrair `.config/opencode`
+apagaria em silêncio `hypr/`, `waybar/` e o resto que o Omarchy acabou de
+escrever. Sem `--force`, até folhas não gerenciadas que já existem são mantidas.
+Por fim, o payload descompactado é medido antes da extração e fica em
+`~/.ezomar-restore-staging`, no disco do home, não no tmpfs de `/tmp`;
+`EZOMAR_RESTORE_STAGING_DIR=/mnt/outro-disco` muda essa área quando necessário.
 
 Reclonar nos mesmos caminhos não é preciosismo. O Claude Code indexa conversa
 pelo caminho absoluto do diretório, então um repo que volta uma pasta ao lado

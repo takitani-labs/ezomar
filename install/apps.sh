@@ -25,6 +25,21 @@ FAILED=()
 for script in "$SCRIPT_DIR/apps"/*.sh; do
   [ -f "$script" ] || continue
   name="$(basename "$script")"
+  skip=0
+  if [ -n "${EZOMAR_INSTALL_ONLY:-}" ]; then
+    skip=1
+    for selected in $EZOMAR_INSTALL_ONLY; do
+      if [ "$name" = "$selected" ]; then skip=0; break; fi
+    done
+  fi
+  for skipped in ${EZOMAR_INSTALL_SKIP:-}; do
+    if [ "$name" = "$skipped" ]; then skip=1; break; fi
+  done
+  if [ "$skip" -eq 1 ]; then
+    echo
+    echo "[ezomar][módulo] $name pulado por EZOMAR_INSTALL_SKIP."
+    continue
+  fi
   echo
   echo "[ezomar][módulo] $name"
   if bash "$script"; then

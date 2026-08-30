@@ -25,6 +25,8 @@ set -euo pipefail
 #                        ensaiar o par backup/restore sem embarcar credencial
 #                        nenhuma, e para tirar um tarball só de credenciais
 #                        (sem as conversas, que são o grosso do tamanho).
+#   EZOMAR_SKIP_OPENCODE_DB  true (padrão) pula opencode.db, opencode.db-wal e
+#                        afins; false leva o banco vivo inteiro.
 
 DEST_DIR="${1:-$HOME/backups}"
 STAMP="$(date +%Y%m%d-%H%M)"
@@ -36,6 +38,8 @@ OUT="$DEST_DIR/ezomar-ai-$STAMP.tar.zst"
 # is also what makes EZOMAR_BACKUP_ONLY work on the restore side for free.
 PATHS_MEMBER=".ezomar-backup-paths"
 MANIFEST_REL=".ezomar-repos-manifest.tsv"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 say() { echo "[ezomar][backup-ai] $*"; }
 die() { echo "[ezomar][backup-ai] $*" >&2; exit 1; }
@@ -58,6 +62,11 @@ INCLUDE=(
   .grok
   .config/opencode
   .local/share/opencode       # auth.json e opencode.db (as conversas)
+
+  # --- the fleet must exist before its service is allowed to start ----------
+  .config/herdr               # session.json is the only durable fleet index
+  .local/state/herdr          # small state; caches are harmless to regenerate
+  .config/systemd/user        # herdr.service and its login-selecting drop-in
 
   # --- as APIs locais das subscriptions ------------------------------------
   .cli-proxy-api              # config.yaml (api-key local) + tokens OAuth
@@ -84,8 +93,6 @@ INCLUDE=(
 #   ~/.zshrc, ~/.tmux.conf, ~/.gitconfig, ~/.config/ezomar/config.sh  o chezmoi
 #     carrega os quatro. Uma segunda cópia aqui é uma segunda fonte de verdade,
 #     que envelhece calada e um dia é restaurada por cima da boa.
-#   ~/.config/systemd/user   os units vêm do repo de dotfiles; o preformat.sh
-#     reclama do que ainda não estiver lá, e a correção é pôr no chezmoi.
 #   ~/.config/age/keys.txt   o módulo 20 tira do Bitwarden. Guardar a chave que
 #     decripta os dotfiles num tarball em claro anularia a encriptação deles.
 #   ~/.op_session, ~/.bw_session*   tokens de sessão, renovados pelo
@@ -112,6 +119,7 @@ EXCLUDE_PATTERNS=(
   '.claude/local'
   '.claude/cache'
   '.claude/backups'
+  '.claude/backup-rename-*'
   '.kimi-code/cache'
   '.kimi-code/search-index'
   '.grok/marketplace-cache'
@@ -130,15 +138,33 @@ EXCLUDE_PATTERNS=(
   # 6,2G de transcrição do grok que ninguém relê; o auth.json é o que importa.
   '.grok/sessions'
   '.local/share/opencode/snapshot'
+  # herdr installs its plugins again and recreates runtime/cache state. Keeping
+  # the 323 MB tree would also preserve an orphaned 311 MB clone forever.
+  '.config/herdr/plugins'
+  '.config/herdr/*.log'
+  '.config/herdr/*.sock'
+  '.config/herdr/config.toml.bak'
+  '.config/herdr/session.json.pre-crash-*'
   '*/node_modules'
   '*.sock'
 )
+
+# The 10 GB SQLite database is live while the fleet runs, so copying it by
+# default costs time and can capture a WAL-dependent point-in-time image. The
+# auth/config beside it still travels; set this false only when those OpenCode
+# conversations are worth the large final tarball and its consistency risk.
+if [ "${EZOMAR_SKIP_OPENCODE_DB:-true}" = "true" ]; then
+  EXCLUDE_PATTERNS+=('.local/share/opencode/opencode.db*')
+  say "opencode.db* será pulado (EZOMAR_SKIP_OPENCODE_DB=false para incluir o banco vivo)."
+fi
 
 # Snapshot dos repos, só quando o manifesto vai de fato neste tarball.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 for p in "${INCLUDE[@]}"; do
   if [ "$p" = "$MANIFEST_REL" ] && [ -f "$SCRIPT_DIR/repos-manifest.sh" ]; then
-    bash "$SCRIPT_DIR/repos-manifest.sh"
+    # The manifest belongs in the archive, not as new state under $HOME on the
+    # disk about to be wiped. Staging preserves its relative restore path.
+    bash "$SCRIPT_DIR/repos-manifest.sh" "$TMP_DIR/$MANIFEST_REL"
     break
   fi
 done
@@ -148,7 +174,13 @@ done
 EXISTING=()
 ABSENT=()
 for p in "${INCLUDE[@]}"; do
-  if [ -e "$HOME/$p" ] || [ -L "$HOME/$p" ]; then EXISTING+=("$p"); else ABSENT+=("$p"); fi
+  if [ "$p" = "$MANIFEST_REL" ] && [ -s "$TMP_DIR/$MANIFEST_REL" ]; then
+    EXISTING+=("$p")
+  elif [ -e "$HOME/$p" ] || [ -L "$HOME/$p" ]; then
+    EXISTING+=("$p")
+  else
+    ABSENT+=("$p")
+  fi
 done
 [ ${#EXISTING[@]} -gt 0 ] || die "nenhum dos caminhos pedidos existe em \$HOME."
 
@@ -175,7 +207,10 @@ if command -v chezmoi >/dev/null 2>&1; then
   while IFS= read -r m; do
     [ -n "$m" ] || continue
     MANAGED_SET["${m#"$HOME"/}"]=1
-  done < <(chezmoi managed --path-style absolute 2>/dev/null || true)
+  # Directory ancestors are structural output, not ownership of their whole
+  # subtree. In particular, excluding a managed profile directory would also
+  # drop its unmanaged .credentials.json. Files and symlinks are the leaves.
+  done < <(chezmoi managed --include=files,symlinks --path-style absolute 2>/dev/null || true)
 fi
 if [ ${#MANAGED_SET[@]} -eq 0 ]; then
   say "Aviso: chezmoi não respondeu; o tarball vai duplicar o que os dotfiles já carregam." >&2
@@ -222,12 +257,17 @@ say "Incluindo (${#EXISTING[@]}): ${EXISTING[*]}"
 [ ${#ABSENT[@]} -gt 0 ] && say "Não existem nesta máquina: ${ABSENT[*]}"
 say "Excluído por já estar no chezmoi: ${#MANAGED_EXCLUDES[@]} caminho(s)"
 
-# O manifesto do que entrou vai como primeiro membro, num diretório temporário,
+# O manifesto do que entrou vai como primeiro membro, no diretório temporário,
 # para não deixar rastro em $HOME. O restore lê ele com --occurrence=1 e para
 # de ler o stream aí, sem descompactar dezenas de gigas para descobrir a lista.
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
 printf '%s\n' "${EXISTING[@]}" >"$TMP_DIR/$PATHS_MEMBER"
+
+HOME_EXISTING=()
+for p in "${EXISTING[@]}"; do
+  [ "$p" = "$MANIFEST_REL" ] || HOME_EXISTING+=("$p")
+done
+STAGED_MEMBERS=("$PATHS_MEMBER")
+[ -s "$TMP_DIR/$MANIFEST_REL" ] && STAGED_MEMBERS+=("$MANIFEST_REL")
 
 mkdir -p "$DEST_DIR"
 say "Gerando $OUT ..."
@@ -238,8 +278,8 @@ say "Gerando $OUT ..."
 # é lido à mão: 1 é aviso, acima disso é falha de verdade.
 set +e
 tar --ignore-failed-read "${TAR_ARGS[@]}" -cf - \
-  -C "$TMP_DIR" "$PATHS_MEMBER" \
-  -C "$HOME" "${EXISTING[@]}" \
+  -C "$TMP_DIR" "${STAGED_MEMBERS[@]}" \
+  -C "$HOME" "${HOME_EXISTING[@]}" \
   | zstd -T0 -8 -q -o "$OUT"
 STATUS=("${PIPESTATUS[@]}")
 set -e

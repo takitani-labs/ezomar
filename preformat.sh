@@ -51,7 +51,7 @@ EZOMAR_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 . "$EZOMAR_DIR/install/lib/config.sh"
 
 if ! command -v chezmoi >/dev/null 2>&1; then
-  echo "[preformat] chezmoi não encontrado; sem ele não há o que conferir." >&2
+  echo "[ezomar][preformat] chezmoi não encontrado; sem ele não há o que conferir." >&2
   exit 1
 fi
 SRC="$(chezmoi source-path)"
@@ -79,7 +79,7 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; PEND+=("$1"); }
 info() { printf '  \033[34m·\033[0m %s\n' "$1"; }
 item() { printf '      %s\n' "$1"; }
-section() { echo; echo "[preformat] $1"; }
+section() { echo; echo "[ezomar][preformat] $1"; }
 
 # --- 1. drift between the machine and the dotfiles source ---------------------
 section "Drift entre a máquina e o source do chezmoi"
@@ -316,6 +316,7 @@ AI_STATE=(
   "$HOME/.claude.json"              # servidores MCP e tokens
   "$HOME/.codex" "$HOME/.kimi" "$HOME/.cli-proxy-api"
   "$HOME/.config/ai-usagebar"
+  "$HOME/.config/herdr/session.json"
   "$HOME/.ssh" "$HOME/.gnupg" "$HOME/.aws" "$HOME/.kube" "$HOME/.config/gh"
 )
 LAST_BACKUP=""
@@ -353,12 +354,47 @@ else
   info "o tarball está no disco que vai ser apagado; copie para fora (tailscale, NAS) e confira o .sha256"
 fi
 
+# --- 8b. herdr fleet ---------------------------------------------------------------
+# session.json is both tiny and order-sensitive: starting herdr without it lets
+# the server replace the fleet with an empty snapshot before restore can help.
+section "Frota do herdr (~/.config/herdr/session.json)"
+HERDR_SESSION="$HOME/.config/herdr/session.json"
+if [ ! -f "$HERDR_SESSION" ]; then
+  bad "session.json do herdr ausente"
+  MANUAL=1
+elif ! command -v jq >/dev/null 2>&1 || ! jq -e '.version and (.workspaces | type == "array")' "$HERDR_SESSION" >/dev/null 2>&1; then
+  bad "session.json do herdr não pôde ser lido como índice válido"
+  MANUAL=1
+else
+  read -r HERDR_WORKSPACES HERDR_TABS HERDR_PANES HERDR_AGENTS < <(
+    jq -r '[
+      (.workspaces | length),
+      ([.workspaces[].tabs[]] | length),
+      ([.workspaces[].tabs[].panes[]] | length),
+      ([.workspaces[].tabs[].panes[] | select(.agent_session != null)] | length)
+    ] | @tsv' "$HERDR_SESSION"
+  )
+  info "herdr: $HERDR_WORKSPACES workspace(s), $HERDR_TABS tab(s), $HERDR_PANES pane(s), $HERDR_AGENTS sessão(ões) de agente"
+
+  HERDR_IN_BACKUP=""
+  if [ -n "$LAST_BACKUP" ]; then
+    HERDR_IN_BACKUP="$(zstd -dc "$LAST_BACKUP" 2>/dev/null \
+      | tar -tf - --occurrence=1 .config/herdr/session.json 2>/dev/null || true)"
+  fi
+  if [ -n "$HERDR_IN_BACKUP" ]; then
+    ok "session.json do herdr está no backup mais novo: $(basename "$LAST_BACKUP")"
+  else
+    bad "session.json do herdr não está no backup mais novo; refaça com $BACKUP_SCRIPT"
+    MANUAL=1
+  fi
+fi
+
 # --- fix ---------------------------------------------------------------------------
 # Deliberately here, between the two halves: in fix mode nothing below this point
 # is worth printing twice, since the re-check reprints all of it.
 if [ "$MODE" = "fix" ]; then
   echo
-  echo "[preformat] Aplicando correções no source do chezmoi..."
+  echo "[ezomar][preformat] Aplicando correções no source do chezmoi..."
   [ ${#ADDS[@]} -gt 0 ]     && { echo "  chezmoi add (${#ADDS[@]})";       chezmoi add "${ADDS[@]}"; }
   [ ${#ENC_ADDS[@]} -gt 0 ] && { echo "  chezmoi add --encrypt (${#ENC_ADDS[@]})"; chezmoi add --encrypt "${ENC_ADDS[@]}"; }
   [ ${#READDS[@]} -gt 0 ]   && { echo "  chezmoi re-add (${#READDS[@]})";  chezmoi re-add "${READDS[@]}"; }
@@ -368,19 +404,19 @@ if [ "$MODE" = "fix" ]; then
     git -C "$SRC" commit -q -m "Capture the live machine before the format ($(date +%F))"
     git -C "$SRC" push -q
   fi
-  echo "[preformat] Conferindo de novo..."
+  echo "[ezomar][preformat] Conferindo de novo..."
   exec bash "$0"
 fi
 
 echo
-echo "[preformat] ── daqui para baixo é só medição; nada disso reprova o format ──"
+echo "[ezomar][preformat] ── daqui para baixo é só medição; nada disso reprova o format ──"
 
 # --- 9. state nothing versions (copy by hand if it matters) --------------------
 section "Estado que ninguém versiona (copie à mão se importar)"
 for s in "$HOME/.claude.json|servers MCP e estado do Claude Code (reaplicar com claude mcp add)" \
          "$HOME/.local/state/meeting-rig|transcrições e recaps do mrig" \
          "$HOME/.config/meeting-rig/context.md|contexto pessoal do mrig" \
-         "$HOME/.local/share/herdr|sessões do herdr" \
+         "$HOME/.config/herdr/session.json|índice persistente da frota do herdr" \
          "$HOME/.grok|login do Grok (refazer com grok login)"; do
   path="${s%%|*}"; what="${s#*|}"
   [ -e "$path" ] && info "${path#"$HOME"/}: $what"
@@ -527,12 +563,12 @@ done < <(sort -rh "$SIZES" | head -15)
 # --- verdict -------------------------------------------------------------------------
 echo
 if [ ${#PEND[@]} -eq 0 ]; then
-  echo "[preformat] OK, pode formatar, bruxão."
+  echo "[ezomar][preformat] OK, pode formatar, bruxão."
   exit 0
 fi
-echo "[preformat] ${#PEND[@]} pendência(s):"
+echo "[ezomar][preformat] ${#PEND[@]} pendência(s):"
 for p in "${PEND[@]}"; do echo "  - $p"; done
 FIXABLE=$(( ${#ADDS[@]} + ${#ENC_ADDS[@]} + ${#READDS[@]} ))
-[ "$FIXABLE" -gt 0 ] && echo "[preformat] As de chezmoi ($FIXABLE caminhos) o --fix resolve: bash preformat.sh --fix"
-[ "$MANUAL" -eq 1 ] && echo "[preformat] As de repo e de backup são suas: o --fix não commita, não faz push do seu trabalho nem roda o backup."
+[ "$FIXABLE" -gt 0 ] && echo "[ezomar][preformat] As de chezmoi ($FIXABLE caminhos) o --fix resolve: bash preformat.sh --fix"
+[ "$MANUAL" -eq 1 ] && echo "[ezomar][preformat] As de repo e de backup são suas: o --fix não commita, não faz push do seu trabalho nem roda o backup."
 exit 1
