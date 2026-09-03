@@ -175,11 +175,46 @@ step_other_logins() {
   wait_for_human "codex login" "Em outro terminal, rode 'codex login' e conclua o navegador." verify_codex
 }
 
+# Medido no ensaio em VM: sem a identidade age, o `chezmoi apply` aborta no
+# primeiro arquivo criptografado, e aborta ANTES de criar os symlinks
+# ~/.claude-profiles/*/projects. As 11 mil conversas continuam no disco sob
+# ~/.claude/projects, os perfis e as credenciais voltam, e a máquina parece
+# restaurada -- mas cada pane retomado abre um perfil cujo store está vazio, e
+# `claude --resume` não acha transcript nenhum. Ninguém adiante percebe, então a
+# checagem tem que ser aqui.
+assert_chezmoi_converged() {
+  local pending profile link broken=0 ok=0
+  if ! pending="$(chezmoi status 2>&1)"; then
+    die "o chezmoi não consegue avaliar o estado (${pending%%$'\n'*})."
+  fi
+  [ -z "$pending" ] || say "Aviso: o chezmoi ainda lista $(printf '%s\n' "$pending" | wc -l) caminho(s) por aplicar."
+
+  for profile in "$HOME"/.claude-profiles/*/; do
+    [ -d "$profile" ] || continue
+    link="$profile/projects"
+    if [ -d "$link" ]; then
+      ok=$((ok + 1))
+    else
+      broken=$((broken + 1))
+      # --force porque o chezmoi pergunta antes de reescrever um caminho que
+      # mudou desde a última vez que ele o escreveu, e a pergunta morre sem TTY.
+      say "Perfil sem store de conversas: ${profile%/}"
+      say "  reparo: chezmoi apply --force ${profile}projects"
+    fi
+  done
+
+  [ "$broken" -eq 0 ] \
+    || die "$broken perfil(is) sem ~/.claude-profiles/<perfil>/projects; os panes retomariam vazios."
+  [ "$ok" -gt 0 ] || die "nenhum perfil do Claude foi restaurado pelo chezmoi."
+  say "Os $ok perfis enxergam o store de conversas."
+}
+
 step_chezmoi() {
   bash "$REPO_DIR/install/apps/20-age-key.sh"
   [ -s "$HOME/.config/age/keys.txt" ] || die "a identidade age não foi restaurada pelo cofre."
   bash "$REPO_DIR/install/apps/30-chezmoi.sh"
   [ -d "$(chezmoi source-path)/.git" ] || die "o source do chezmoi não foi clonado."
+  assert_chezmoi_converged
 }
 
 step_remaining_install() {
