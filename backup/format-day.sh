@@ -110,7 +110,26 @@ verify_op() {
   # The desktop keyring can already hold a valid session even without a file.
   op whoami >/dev/null 2>&1
 }
-verify_claude() { claude auth status >/dev/null 2>&1; }
+# Duas armadilhas aqui. `claude auth status` sai com zero mesmo deslogado, então
+# o que vale é o "loggedIn": true da saída, não o código de retorno. E esta
+# máquina nunca usa o ~/.claude padrão: cada sessão roda sob um perfil, e é lá
+# que o tarball entrega as credenciais. Basta um perfil autenticado.
+claude_logged_in() {
+  claude auth status 2>/dev/null | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*true'
+}
+
+verify_claude() {
+  local profile
+  claude_logged_in && return 0
+  for profile in "$HOME"/.claude-profiles/*/; do
+    [ -f "$profile/.credentials.json" ] || continue
+    if CLAUDE_CONFIG_DIR="${profile%/}" claude_logged_in; then
+      say "Claude autenticado no perfil $(basename "${profile%/}")."
+      return 0
+    fi
+  done
+  return 1
+}
 verify_codex() { codex login status >/dev/null 2>&1; }
 
 ensure_chezmoi() {
