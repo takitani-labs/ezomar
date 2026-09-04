@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+# Nenhuma etapa daqui pode parar esperando um humano digitar senha. Um único
+# remote https no meio de centenas de repositórios pendura o restore inteiro em
+# "Username for ...", e sem -e ele nem sequer morreria: ficaria parado para
+# sempre. Sem prompt, o repositório problemático entra na lista de falhas.
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=/bin/true
+export SSH_ASKPASS=/bin/true
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=10}"
+
 # Reclona, na máquina nova, os repos do manifesto gerado antes do format, cada
 # um no mesmo caminho de antes.
 #

@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Nenhuma etapa daqui pode parar esperando um humano digitar senha. Um único
+# remote https no meio de centenas de repositórios pendura a restauração inteira
+# em "Username for ...", e no dia do format isso acontece com a máquina no meio
+# do caminho. Sem prompt, o repositório problemático falha sozinho e entra no
+# relatório do fim.
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=/bin/true
+export SSH_ASKPASS=/bin/true
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=10}"
+
 # Run after restore-repos.sh. Every update is a fast-forward or a clean apply;
 # divergence and collisions are reported because format recovery is the worst
 # possible time to turn an implicit force into data loss.
