@@ -189,10 +189,14 @@ assert_chezmoi_converged() {
   fi
   [ -z "$pending" ] || say "Aviso: o chezmoi ainda lista $(printf '%s\n' "$pending" | wc -l) caminho(s) por aplicar."
 
+  # Aqui só se cobra que o link exista e aponte para o lugar certo. Ele fica
+  # pendurado de propósito: ~/.claude/projects só chega no restore completo,
+  # que roda depois deste passo. Quem cobra que ele resolva é
+  # assert_profile_stores, logo antes do herdr subir.
   for profile in "$HOME"/.claude-profiles/*/; do
     [ -d "$profile" ] || continue
     link="$profile/projects"
-    if [ -d "$link" ]; then
+    if [ -L "$link" ] || [ -d "$link" ]; then
       ok=$((ok + 1))
     else
       broken=$((broken + 1))
@@ -206,7 +210,30 @@ assert_chezmoi_converged() {
   [ "$broken" -eq 0 ] \
     || die "$broken perfil(is) sem ~/.claude-profiles/<perfil>/projects; os panes retomariam vazios."
   [ "$ok" -gt 0 ] || die "nenhum perfil do Claude foi restaurado pelo chezmoi."
-  say "Os $ok perfis enxergam o store de conversas."
+  say "Os $ok perfis têm o link para o store de conversas."
+}
+
+# O link do chezmoi pode estar certo e ainda assim não levar a lugar nenhum, se
+# o restore não trouxe ~/.claude/projects. Como cada pane retomado abre
+# `claude --resume <uuid>` sob o seu perfil, um link pendurado aqui significa a
+# frota inteira voltando sem conversa. Por isso esta cobrança fica colada no
+# início do herdr, quando o restore já passou.
+assert_profile_stores() {
+  local profile link dangling=0 ok=0
+  for profile in "$HOME"/.claude-profiles/*/; do
+    [ -d "$profile" ] || continue
+    link="$profile/projects"
+    [ -L "$link" ] || [ -d "$link" ] || continue
+    if [ -d "$link" ]; then
+      ok=$((ok + 1))
+    else
+      dangling=$((dangling + 1))
+      say "Store de conversas não resolve: ${profile%/}/projects -> $(readlink "$link")"
+    fi
+  done
+  [ "$dangling" -eq 0 ] \
+    || die "$dangling perfil(is) com o store pendurado; os panes retomariam sem conversa."
+  say "Os $ok perfis resolvem o store de conversas."
 }
 
 step_chezmoi() {
@@ -282,6 +309,7 @@ assert_pane_cwds() {
 
 step_start_herdr() {
   [ -s "$HOME/.config/herdr/session.json" ] || die "recusando iniciar herdr.service sem session.json."
+  assert_profile_stores
   assert_pane_cwds
   if [ -L "$HERDR_GUARD" ] && [ "$(readlink "$HERDR_GUARD")" = /dev/null ]; then
     rm -- "$HERDR_GUARD"
