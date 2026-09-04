@@ -18,7 +18,14 @@ fi
 
 # Omarchy is the expected base, but plain Arch works: the modules only add what
 # is missing. Warn rather than abort, so a bare Arch install is still usable.
-if [ ! -d "$HOME/.local/share/omarchy" ] && [ ! -d "/etc/omarchy" ]; then
+#
+# Ask the system what it is instead of looking for a directory. Omarchy 4.0.2
+# ships as a pacman package under /usr/share/omarchy; the ~/.local/share/omarchy
+# checkout this used to look for belongs to the older install-script era, so the
+# old test called a real Omarchy "not detected".
+if ! grep -qx 'ID=omarchy' /etc/os-release 2>/dev/null \
+  && ! command -v omarchy >/dev/null 2>&1 \
+  && [ ! -d "/usr/share/omarchy" ] && [ ! -d "$HOME/.local/share/omarchy" ] && [ ! -d "/etc/omarchy" ]; then
   echo "[ezomar] Aviso: Omarchy não detectado. Seguindo mesmo assim (Arch puro é suportado)."
 fi
 
