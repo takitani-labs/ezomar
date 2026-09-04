@@ -40,6 +40,18 @@ OK=0
 PARTIAL=0
 FAIL=0
 
+# Quem "possui" os refs de cada repositório, indexado pela chave do diretório
+# comum. Um worktree ligado compartilha objetos e refs com esse dono; recriá-lo
+# como clone independente joga fora o compartilhamento. Medido na máquina de
+# reserva: 19 worktrees do mantis recriados assim ocuparam 36 GB, e a máquina de
+# origem guarda 272 deles em 211 GB TOTAIS, justamente porque são worktrees.
+declare -A OWNER_REL=()
+while IFS=$'\t' read -r _id o_rel64 _b _r o_common o_owns _h _bare; do
+  [ -n "${_id:-}" ] || continue
+  [ "${o_owns:-}" = true ] || continue
+  OWNER_REL["$o_common"]="$(printf '%s' "$o_rel64" | base64 -d)"
+done <"$TMP_DIR/manifest.tsv"
+
 bundle_has_prerequisite() {
   local line
   while IFS= read -r line; do
@@ -81,6 +93,21 @@ while IFS=$'\t' read -r id rel64 branch64 remote64 common_key owns_refs head64 i
       git -C "$repo" "$@"
     fi
   }
+
+  # Antes de pensar em clonar: se esta entrada é um worktree ligado e o dono dos
+  # refs já está no disco, o certo é pendurá-lo no dono. Sai instantâneo, sem
+  # rede, e os objetos continuam compartilhados como na máquina de origem. Fica
+  # destacado de propósito; a seleção da branch arquivada acontece mais abaixo,
+  # no mesmo caminho que os repositórios normais percorrem.
+  if ! repo_exists && [ "$owns_refs" != true ] && [ "$is_bare" = false ]; then
+    owner_rel="${OWNER_REL["$common_key"]:-}"
+    if [ -n "$owner_rel" ] && [ -e "$HOME/$owner_rel/.git" ]; then
+      mkdir -p "$(dirname "$repo")"
+      if git -C "$HOME/$owner_rel" worktree add --detach "$repo" 2>/dev/null; then
+        applied+=("worktree pendurado em $owner_rel")
+      fi
+    fi
+  fi
 
   if ! repo_exists && [ "$remote" != "-" ]; then
     mkdir -p "$(dirname "$repo")"
