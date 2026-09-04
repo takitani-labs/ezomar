@@ -280,7 +280,19 @@ step_full_restore() {
   EZOMAR_DEFER_HERDR_SESSION=true bash "$SCRIPT_DIR/restore-ai.sh" "$AI_BACKUP" --force
 }
 
-step_restore_repos() { bash "$SCRIPT_DIR/restore-repos.sh"; }
+# Falha de clone é fatal por padrão: quase sempre significa chave SSH ainda não
+# configurada, e seguir em frente deixaria panes apontando para diretórios que
+# não existem. Mas há um caso legítimo de seguir mesmo assim, o remote que
+# morreu: aí não existe clone possível, o preformat já avisou antes do format, e
+# a decisão de perder aquela história é do humano, não do script.
+step_restore_repos() {
+  if bash "$SCRIPT_DIR/restore-repos.sh"; then
+    return 0
+  fi
+  [ "${EZOMAR_ALLOW_REPO_FAILURES:-}" = true ] \
+    || die "reclone falhou. Revise a lista acima; EZOMAR_ALLOW_REPO_FAILURES=true segue assumindo a perda."
+  say "Seguindo com repos faltando, por EZOMAR_ALLOW_REPO_FAILURES."
+}
 step_restore_wip() { bash "$SCRIPT_DIR/restore-wip.sh" "$WIP_BACKUP"; }
 step_profiles() { bash "$REPO_DIR/install/apps/66-claude-profile-restore.sh"; }
 
