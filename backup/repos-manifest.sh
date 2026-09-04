@@ -31,7 +31,10 @@ while IFS= read -r gitdir; do
   repo="$(dirname "$gitdir")"
   # Worktrees do git guardam um .git dentro do diretório administrativo do repo
   # principal; reclonar isso não faz sentido nenhum.
-  case "$repo" in *--worktrees*|*/.git/*) continue ;; esac
+  # O terceiro padrão existe porque esta máquina tem um .git/.git dentro do
+  # mantis: o find acha o interno, o dirname devolve ".../mantis/.git", e sem
+  # ele o manifesto registra o diretório administrativo como se fosse um repo.
+  case "$repo" in *--worktrees*|*/.git/*|*/.git) continue ;; esac
 
   rel="${repo#"$HOME"/}"
   url="$(git -C "$repo" remote get-url origin 2>/dev/null || echo '-')"

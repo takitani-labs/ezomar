@@ -297,6 +297,58 @@ else
   fi
 fi
 
+# --- 7b. remotes that no longer answer ----------------------------------------------
+#
+# restore-repos.sh reclona do remote, e backup-wip.sh só empacota o que NÃO está
+# no remote. Quando o remote morre, as duas premissas caem juntas: os refs
+# origin/* continuam no disco, então o bundle sai vazio, e o clone não acha nada.
+# O repositório inteiro vive apenas na cópia local que o format apaga. Medido na
+# máquina de reserva: 6 repos nessa situação, um deles com 17 commits de trabalho.
+if [ "${EZOMAR_SKIP_REMOTE_CHECK:-}" = true ]; then
+  info "checagem de remotes pulada (EZOMAR_SKIP_REMOTE_CHECK)"
+elif [ ${#GITDIRS[@]} -eq 0 ]; then
+  :
+else
+  section "remotes que ainda respondem"
+  REMOTE_T0=$SECONDS
+  declare -A URL_REPOS=()
+  for dir in "${GITDIRS[@]}"; do
+    url="$(git -C "$dir" remote get-url origin 2>/dev/null || true)"
+    [ -n "$url" ] || continue
+    URL_REPOS["$url"]="${URL_REPOS["$url"]:-}${URL_REPOS["$url"]:+ }${dir#"$HOME"/}"
+  done
+
+  DEAD=()
+  if [ ${#URL_REPOS[@]} -gt 0 ]; then
+    # Um teste por URL distinta, não por repositório: dezenas de worktrees e
+    # clones compartilham o mesmo remote, e a rede é o gargalo.
+    mapfile -t DEAD < <(printf '%s\n' "${!URL_REPOS[@]}" \
+      | xargs -r -P "$JOBS" -I{} bash -c '
+          GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=8" \
+            timeout 20 git ls-remote --exit-code "$1" HEAD >/dev/null 2>&1 || printf "%s\n" "$1"
+        ' _ {} | sort)
+  fi
+  REMOTE_SECS=$(( SECONDS - REMOTE_T0 ))
+
+  if [ ${#DEAD[@]} -eq 0 ]; then
+    ok "${#URL_REPOS[@]} remote(s) distintos respondem (${REMOTE_SECS}s)"
+  else
+    bad "${#DEAD[@]} remote(s) não respondem; esses repos NÃO voltam por clone"
+    MANUAL=1
+    for url in "${DEAD[@]}"; do
+      for rel in ${URL_REPOS["$url"]}; do
+        # Quanto existe só aqui decide a gravidade: 0 quer dizer que o bundle do
+        # backup-wip sai vazio e a história inteira depende desta máquina.
+        solo="$(git -C "$HOME/$rel" rev-list --branches --tags --not --remotes --count 2>/dev/null || echo '?')"
+        total="$(git -C "$HOME/$rel" rev-list --all --count 2>/dev/null || echo '?')"
+        item "$(printf '%-46s %s commits, %s fora do remote' "$rel" "$total" "$solo")"
+      done
+      item "$(printf '%-46s %s' '' "$url")"
+    done
+    info "empurre para outro remote antes de formatar, ou aceite perder a história"
+  fi
+fi
+
 # --- 8. the AI-state tarball -------------------------------------------------------
 # chezmoi carries the dotfiles, the profiles and the skills. It deliberately does
 # not carry the state that churns: the Claude Code conversations, the 227 MCP
