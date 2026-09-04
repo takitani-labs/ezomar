@@ -141,7 +141,7 @@ guard_herdr() {
 step_credentials() {
   local key has_private=false
   ensure_chezmoi
-  EZOMAR_BACKUP_ONLY='.ssh .gnupg' bash "$SCRIPT_DIR/restore-ai.sh" "$AI_BACKUP"
+  EZOMAR_BACKUP_ONLY='.ssh .gnupg .config/op' bash "$SCRIPT_DIR/restore-ai.sh" "$AI_BACKUP"
   for key in "$HOME/.ssh"/*; do
     [ -f "$key" ] || continue
     if grep -IqE '^-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----$' "$key" 2>/dev/null; then

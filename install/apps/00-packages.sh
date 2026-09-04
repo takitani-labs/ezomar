@@ -15,7 +15,10 @@ set -euo pipefail
 #   atuin   histórico de shell; o .zshrc degrada com aviso sem ele
 #   unzip   usado pelos instaladores que baixam zip
 #   mosh    shells que sobrevivem a um link ruim
-PKGS=(zsh atuin unzip mosh)
+# 1password-cli porque o format-day manda o humano rodar `ops` antes de qualquer
+# outra coisa, e sem o binário esse passo ficava num laço pedindo um comando que
+# não existia. O Omarchy serve a mesma versão do próprio repositório.
+PKGS=(zsh atuin unzip mosh 1password-cli)
 
 # Dependências do meeting-rig (módulo 74), que só roda quando o repo de
 # ferramentas está configurado. Instalar sempre deixaria dois pacotes de áudio e

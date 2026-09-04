@@ -83,6 +83,9 @@ INCLUDE=(
   .npmrc
   .docker/config.json
   .bw-profiles                # os três perfis do bw (persona, personal, work)
+  .config/op                  # inscrição do 1Password: sem ela, entrar exige a
+                              # Secret Key do Emergency Kit. São 4 KB, e o
+                              # tarball já carrega chave SSH privada e GnuPG.
 
   # --- estado que ninguém mais reporia --------------------------------------
   .config/meeting-rig         # contexto pessoal do mrig
