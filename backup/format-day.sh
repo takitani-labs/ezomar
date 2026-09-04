@@ -293,7 +293,19 @@ step_restore_repos() {
     || die "reclone falhou. Revise a lista acima; EZOMAR_ALLOW_REPO_FAILURES=true segue assumindo a perda."
   say "Seguindo com repos faltando, por EZOMAR_ALLOW_REPO_FAILURES."
 }
-step_restore_wip() { bash "$SCRIPT_DIR/restore-wip.sh" "$WIP_BACKUP"; }
+# O restore-wip sai com erro sempre que algo ficou parcial, e faz bem: parcial
+# quer dizer que uma branch divergiu, um patch conflitou ou um não rastreado
+# bateu de frente com outro tipo de arquivo, e em todos esses casos ele preferiu
+# não forçar. Só que "não forçou" costuma ser o resultado certo, não um defeito,
+# e a lista precisa de olho humano em vez de derrubar o dia inteiro.
+step_restore_wip() {
+  if bash "$SCRIPT_DIR/restore-wip.sh" "$WIP_BACKUP"; then
+    return 0
+  fi
+  [ "${EZOMAR_ALLOW_WIP_PARTIALS:-}" = true ] \
+    || die "restore-wip deixou pendências. Revise a lista; EZOMAR_ALLOW_WIP_PARTIALS=true segue depois de revisada."
+  say "Seguindo com as pendências do WIP, por EZOMAR_ALLOW_WIP_PARTIALS."
+}
 step_profiles() { bash "$REPO_DIR/install/apps/66-claude-profile-restore.sh"; }
 
 step_session() {
