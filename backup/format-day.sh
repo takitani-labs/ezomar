@@ -169,8 +169,16 @@ step_login_tools() {
   EZOMAR_INSTALL_ONLY='35-shell.sh 58-npm-ai-clis.sh' bash "$REPO_DIR/install.sh"
 }
 
-step_other_logins() {
+step_op_login() {
   wait_for_human "ops" "Em outro terminal, rode 'ops' e conclua o login do 1Password." verify_op
+}
+
+# Claude e Codex ficam DEPOIS do restore de propósito. As credenciais das cinco
+# contas viajam no tarball, então quando o restore passa estes dois verificam
+# sozinhos e nenhum navegador é aberto. Perguntar antes do restore obrigava um
+# /login à mão para uma conta que já estava a caminho, e ainda gravava por cima
+# do que o tarball traria em seguida.
+step_agent_logins() {
   wait_for_human "claude login" "Em outro terminal, rode 'claude' e conclua /login no navegador." verify_claude
   wait_for_human "codex login" "Em outro terminal, rode 'codex login' e conclua o navegador." verify_codex
 }
@@ -339,9 +347,10 @@ run_step install-bootstrap "instalar base e cliente Bitwarden" step_install_boot
 run_step login-bw "concluir e verificar o login Bitwarden" step_bw_login
 run_step chezmoi "restaurar age e aplicar chezmoi" step_chezmoi
 run_step login-tools "instalar shell e Codex para os logins" step_login_tools
-run_step other-logins "concluir e verificar 1Password, Claude e Codex" step_other_logins
+run_step login-op "concluir e verificar o login do 1Password" step_op_login
 run_step install-rest "concluir os módulos idempotentes" step_remaining_install
 run_step restore-ai "restaurar todo o estado, adiando session.json" step_full_restore
+run_step login-agents "conferir Claude e Codex (o restore costuma bastar)" step_agent_logins
 run_step restore-repos "reclonar repos nos caminhos absolutos" step_restore_repos
 run_step restore-wip "reaplicar commits, stash, patches e não rastreados" step_restore_wip
 run_step profiles "reconstruir sessionId → perfil com o módulo 66" step_profiles
