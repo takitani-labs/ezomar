@@ -65,6 +65,10 @@ INCLUDE=(
 
   # --- the fleet must exist before its service is allowed to start ----------
   .config/herdr               # session.json is the only durable fleet index
+                              # (inclui session-snapshots/, as cópias horárias)
+  .local/state/ezomar         # uuids colhidos do scrollback: o único lugar onde
+                              # sobrevive o vínculo pane -> conversa de um agente
+                              # que morreu antes de o índice ser copiado
   .local/state/herdr          # small state; caches are harmless to regenerate
   .config/systemd/user        # herdr.service and its login-selecting drop-in
 

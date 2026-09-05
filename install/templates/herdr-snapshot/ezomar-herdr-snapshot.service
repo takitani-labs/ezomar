@@ -1,0 +1,8 @@
+[Unit]
+Description=Copy the herdr fleet index before it can be overwritten
+
+[Service]
+Type=oneshot
+ExecStart=%h/work/repos/takitani-labs/ezomar/backup/snapshot-herdr-session.sh
+Nice=10
+IOSchedulingClass=idle

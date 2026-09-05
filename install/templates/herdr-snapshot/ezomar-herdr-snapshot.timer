@@ -1,0 +1,15 @@
+[Unit]
+Description=Hourly copies of the herdr fleet index
+
+[Timer]
+# De hora em hora, e logo depois do boot: o herdr reescreve o session.json ao
+# subir, então a cópia mais valiosa é a que se tira antes de a máquina esquentar.
+OnBootSec=3min
+OnUnitActiveSec=1h
+RandomizedDelaySec=2min
+AccuracySec=1min
+Persistent=true
+Unit=ezomar-herdr-snapshot.service
+
+[Install]
+WantedBy=timers.target
