@@ -45,6 +45,24 @@ DROPIN="$DROPIN_DIR/99-ezomar-inodes.conf"
 
 say() { echo "[ezomar][tmp-inodes] $*"; }
 
+# Opt-in porque escreve em /etc/systemd/system e remonta o /tmp da máquina. O
+# teto de 1m inodes que motivou isto foi medido no Fedora daqui; outra distro
+# pode montar o /tmp com outros parâmetros, e descobrir isso vale mais do que
+# aplicar o remendo antes de o problema existir. O relatório abaixo sai sempre,
+# porque saber o número é barato e não muda nada no sistema.
+# O "|| true" nos dois: sob pipefail, um grep que não acha nada derruba o script
+# inteiro, e "não há teto declarado" é justamente uma das respostas possíveis.
+CURRENT_INODES="$(findmnt -no OPTIONS /tmp 2>/dev/null | tr ',' '\n' | grep -m1 '^nr_inodes=' | cut -d= -f2 || true)"
+USED_INODES="$(df -i /tmp 2>/dev/null | awk 'NR==2 {print $5}' | tr -d '%' || true)"
+say "Hoje: /tmp com nr_inodes=${CURRENT_INODES:-(sem teto declarado)}, ${USED_INODES:-?}% em uso."
+
+if [ "${EZOMAR_INSTALL_TMP_INODES:-}" != "true" ] && [ "$ON_DISK" != "true" ]; then
+  say "Ajuste é opt-in (mexe no tmp.mount do sistema). Para ligar:"
+  say "  EZOMAR_INSTALL_TMP_INODES=true bash install/apps/84-tmp-inodes.sh   (teto para $WANT)"
+  say "  EZOMAR_TMP_ON_DISK=true bash install/apps/84-tmp-inodes.sh          (/tmp no disco)"
+  exit 0
+fi
+
 if [ "$ON_DISK" = "true" ]; then
   # Mascarar é o jeito suportado de dizer "não monte tmpfs aqui": o /tmp passa
   # a ser um diretório comum do sistema de arquivos raiz. Vale no próximo boot,

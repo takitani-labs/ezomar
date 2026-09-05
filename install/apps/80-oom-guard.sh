@@ -54,6 +54,17 @@ done
 say "Antes: sysrq=$(cat /proc/sys/kernel/sysrq) admin_reserve=$(cat /proc/sys/vm/admin_reserve_kbytes)K"
 
 # --- 1. sysctl escape hatch ------------------------------------------------------
+# Opt-in porque escreve em /etc, fora do $HOME. Os valores aqui nasceram de um
+# congelamento medido no Fedora desta máquina; o Arch pode se comportar de outro
+# jeito, e a decisão de mexer no kernel da máquina nova é de quem a opera, não
+# de um instalador que só está passando.
+if [ "${EZOMAR_OOM_SYSCTL:-}" != "true" ]; then
+  say "sysctl é opt-in (escreve em /etc/sysctl.d). Para ligar:"
+  say "  EZOMAR_OOM_SYSCTL=true bash install/apps/80-oom-guard.sh"
+  say "Dá sysrq=1 (Alt+SysRq+F força um OOM kill, REISUB disponível) e reserva memória para o root."
+  exit 0
+fi
+
 sudo install -m 0644 "$TPL/99-oom-guard.conf" /etc/sysctl.d/99-oom-guard.conf
 sudo sysctl -q -p /etc/sysctl.d/99-oom-guard.conf
 say "sysrq=$(cat /proc/sys/kernel/sysrq) (Alt+SysRq+F força um OOM kill; REISUB disponível)"
