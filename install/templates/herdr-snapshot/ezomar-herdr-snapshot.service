@@ -3,6 +3,14 @@ Description=Copy the herdr fleet index before it can be overwritten
 
 [Service]
 Type=oneshot
+# A sessão de usuário do systemd não herda o PATH do shell, e o herdr mora
+# em ~/.local/bin (instalado pelo módulo 56) ou em /usr/bin (Omarchy).
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/work/repos/takitani-labs/ezomar/backup/snapshot-herdr-session.sh
+# A colheita anda junto porque as duas metades se completam: o snapshot guarda o
+# que o índice ainda sabe, e a colheita guarda o que ele já esqueceu e só existe
+# na tela. Com "-" na frente para nunca derrubar a unidade: sem servidor herdr
+# no ar não há scrollback para ler, e isso é normal, não é falha.
+ExecStart=-%h/work/repos/takitani-labs/ezomar/scripts/herdr-pane-harvest.sh
 Nice=10
 IOSchedulingClass=idle
