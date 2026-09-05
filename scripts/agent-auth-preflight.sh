@@ -236,15 +236,28 @@ if gem is not None:
         # refresh token. Vencido não é problema; ausência de refresh é.
         rows.append((OK, "gemini", "default", "OK", f"{mail}, refresh presente", "-"))
 
-# --- Grok: sessões ativas, uma lista que fica vazia quando não há login
-grok_path = os.path.join(HOME, ".grok", "active_sessions.json")
+# --- Grok: ~/.grok/auth.json, com uma entrada por emissor.
+# Não confundir com active_sessions.json, que lista as TUIs abertas naquele
+# instante e fica vazia com a conta perfeitamente logada.
+grok_path = os.path.join(HOME, ".grok", "auth.json")
 if os.path.exists(grok_path):
-    sessions = load(grok_path)
-    fix = "grok   (conclua o login)"
-    if isinstance(sessions, list) and sessions:
-        rows.append((OK, "grok", "default", "OK", f"{len(sessions)} sessão(ões) ativa(s)", "-"))
-    else:
-        rows.append((OUT, "grok", "default", "PRECISA LOGIN", "nenhuma sessão ativa", fix))
+    fix = "grok login"
+    entries = load(grok_path) or {}
+    found = False
+    for issuer, entry in (entries.items() if isinstance(entries, dict) else []):
+        if not isinstance(entry, dict):
+            continue
+        found = True
+        mail = entry.get("email") or entry.get("user_id") or "?"
+        name = issuer.split("::")[0].replace("https://", "") or "default"
+        if not entry.get("refresh_token") and not entry.get("key"):
+            rows.append((OUT, "grok", name, "PRECISA LOGIN", f"{mail}, sem credencial", fix))
+            continue
+        # expires_at é ISO e vale para o access token; havendo refresh token ele
+        # se renova sozinho, então vencido aqui não é motivo de bloqueio.
+        rows.append((OK, "grok", name, "OK", f"{mail}, refresh presente", "-"))
+    if not found:
+        rows.append((OUT, "grok", "default", "PRECISA LOGIN", "auth.json sem credencial", fix))
 
 # --- o proxy que três perfis dependem
 if proxies_needed and not service_active("cli-proxy-api.service"):
