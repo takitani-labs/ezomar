@@ -28,6 +28,13 @@ set -uo pipefail
 #
 # Variáveis:
 #   EZOMAR_AUTH_WARN_DAYS   avisa tantos dias antes de um refresh vencer (padrão 5)
+#   EZOMAR_AUTH_IGNORE      perfis que você SABE que estão deslogados e aceita
+#                           assim, separados por espaço ou vírgula. Existe por
+#                           causa de máquinas que compartilham conta: o refresh
+#                           token da Anthropic rotaciona, então duas máquinas na
+#                           mesma conta se derrubam, e às vezes a certa a manter
+#                           logada é a outra. Eles continuam aparecendo no
+#                           relatório, marcados, mas não bloqueiam.
 
 GATE=false
 FIX=false
@@ -61,6 +68,9 @@ GATE = sys.argv[1] == "true"
 LIST_FIXES = len(sys.argv) > 2 and sys.argv[2] == "true"
 OUTPUT = sys.stderr if LIST_FIXES else sys.stdout
 WARN_DAYS = float(os.environ.get("EZOMAR_AUTH_WARN_DAYS", "5"))
+IGNORED = {
+    part for part in os.environ.get("EZOMAR_AUTH_IGNORE", "").replace(",", " ").split() if part
+}
 HOME = os.path.expanduser("~")
 NOW = datetime.now(timezone.utc)
 
@@ -217,7 +227,9 @@ for path in sorted(glob.glob(os.path.join(HOME, ".claude-profiles", "*"))):
 
     live = claude_logged_in(path)
     if live is False:
-        rows.append((OUT, "claude", name, "PRECISA LOGIN", f"{label}, o CLI não reconhece a sessão", fix))
+        level = SOON if name in IGNORED else OUT
+        note = "ignorado por EZOMAR_AUTH_IGNORE" if name in IGNORED else "o CLI não reconhece a sessão"
+        rows.append((level, "claude", name, "PRECISA LOGIN", f"{label}, {note}", fix))
         continue
     # live é None quando o binário não respondeu; aí resta o arquivo, que serve
     # para avisar de vencimento próximo mas nunca para declarar saúde.
