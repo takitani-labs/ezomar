@@ -127,6 +127,28 @@ def proxy_alive(url):
         return False
 
 
+def claude_logged_in(profile_dir):
+    # A presença de .credentials.json NÃO é prova de nada: o refresh token da
+    # Anthropic rotaciona, e um arquivo perfeitamente formado pode carregar um
+    # par já invalidado por outra máquina que renovou depois. Medido entre o
+    # takidesk e o kage: o mesmo perfil "team" logado num e deslogado no outro,
+    # com o arquivo do deslogado sendo o MAIS NOVO dos dois. Quem responde é o
+    # CLI. E `claude auth status` sai com zero mesmo deslogado, então o que vale
+    # é o campo loggedIn, não o código de retorno.
+    try:
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=profile_dir)
+        out = subprocess.run(
+            ["claude", "auth", "status"],
+            capture_output=True, text=True, timeout=20, env=env,
+        )
+    except Exception:
+        return None
+    try:
+        return bool(json.loads(out.stdout).get("loggedIn"))
+    except Exception:
+        return None
+
+
 def codex_logged_in(profile_dir):
     try:
         env = dict(os.environ, CODEX_HOME=profile_dir)
@@ -192,6 +214,13 @@ for path in sorted(glob.glob(os.path.join(HOME, ".claude-profiles", "*"))):
     mail = account.get("emailAddress") or oauth.get("emailAddress") or "?"
     tier = oauth.get("subscriptionType") or ""
     label = f"{mail} ({tier})" if tier else mail
+
+    live = claude_logged_in(path)
+    if live is False:
+        rows.append((OUT, "claude", name, "PRECISA LOGIN", f"{label}, o CLI não reconhece a sessão", fix))
+        continue
+    # live é None quando o binário não respondeu; aí resta o arquivo, que serve
+    # para avisar de vencimento próximo mas nunca para declarar saúde.
     expiry_row("claude", name, from_epoch(oauth.get("refreshTokenExpiresAt"), unit_ms=True), label, fix)
 
 # --- Codex: um CODEX_HOME por conta
