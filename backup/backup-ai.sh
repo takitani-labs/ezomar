@@ -161,10 +161,14 @@ EXCLUDE_PATTERNS=(
   '.local/share/opencode/snapshot'
   # herdr installs its plugins again and recreates runtime/cache state. Keeping
   # the 323 MB tree would also preserve an orphaned 311 MB clone forever.
-  # O Chrome guarda 4 GB de Service Worker e 1 GB de IndexedDB, todo regenerável,
-  # e o Extensions volta sozinho na primeira sincronização do perfil.
+  # O Chrome guarda 4 GB de Service Worker, quase tudo cache de site. O
+  # IndexedDB NÃO entra nesta lista: parece cache e não é. O Session Buddy
+  # guarda ali as 254 abas de cada sessão salva, junto de 26 MB em Local
+  # Extension Settings, e excluir a pasta inteira apagaria justamente o que se
+  # queria salvar. Só o IndexedDB de site (http/https) sai; o de extensão fica.
   '.config/google-chrome/*/Service Worker'
-  '.config/google-chrome/*/IndexedDB'
+  '.config/google-chrome/*/IndexedDB/http_*'
+  '.config/google-chrome/*/IndexedDB/https_*'
   '.config/google-chrome/*/Cache'
   '.config/google-chrome/*/Code Cache'
   '.config/google-chrome/*/GPUCache'
