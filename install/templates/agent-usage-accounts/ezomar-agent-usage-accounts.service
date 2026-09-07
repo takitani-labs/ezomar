@@ -4,4 +4,9 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# O "-" torna o arquivo opcional: numa máquina que ainda não passou pelo
+# bootstrap ele não existe, e a unidade não deve falhar por isso. É de lá que
+# sai o EZOMAR_AGENT_PROFILES, que decide quais contas viram aba no painel;
+# sem ele entram todas, e com uma dúzia de perfis a barra de abas fica ilegível.
+EnvironmentFile=-%h/.config/ezomar/config.sh
 ExecStart=%h/.local/bin/ezomar-agent-usage-accounts

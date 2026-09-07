@@ -132,6 +132,7 @@ collect_profile() {
   # native update leaves them alone. Validation happens before mktemp, and mv
   # is the only operation on the destination, so failure or logout can never
   # expose a partial JSON record to the panel.
+  WRITTEN_IDS+=("$id")
   target="$USAGE_DIR/$id.json"
   tmp="$(mktemp "$USAGE_DIR/.$id.XXXXXX")"
   chmod 0600 "$tmp"
@@ -177,8 +178,39 @@ collect_vendor() {
   done
 }
 
+# Cada registro escrito nesta rodada, para saber depois o que sobrou de antes.
+WRITTEN_IDS=()
+
 collect_vendor claude "Claude" "$REAL_HOME/.claude-profiles" "$REAL_HOME/.claude"
 collect_vendor codex "Codex" "$REAL_HOME/.codex-profiles" "$REAL_HOME/.codex"
+
+# Um registro sobrevive ao perfil que o gerou, e o painel faz uma aba para cada
+# arquivo que encontra. Bastou o Claude criar um diretorio ".lock" por um
+# instante para nascer uma aba "claude-proton-max-lock" que nunca mais saiu.
+# Aqui se apaga o que ESTE script escreveu e nao escreveu mais; registros de
+# outra origem (o nativo do Omarchy, a ponte do ai-usagebar) ficam intactos.
+prune_orphans() {
+  local file id keep
+  for file in "$USAGE_DIR"/*.json; do
+    [ -e "$file" ] || continue
+    id="$(basename -- "$file" .json)"
+    # So mexe no que tem a nossa cara: <vendor>-<perfil>.
+    case "$id" in
+      claude-*|codex-*) ;;
+      *) continue ;;
+    esac
+    keep=false
+    for written in ${WRITTEN_IDS+"${WRITTEN_IDS[@]}"}; do
+      [ "$written" = "$id" ] && { keep=true; break; }
+    done
+    if [ "$keep" = false ]; then
+      rm -f -- "$file"
+      say "removido registro orfao: $id"
+    fi
+  done
+}
+
+prune_orphans
 
 # The same timer owns both sources. Keeping ai-usagebar behind this fan-out
 # preserves a single refresh lifecycle and prevents competing services from
