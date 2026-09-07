@@ -51,4 +51,21 @@ grep -qxF "$ZSH_BIN" /etc/shells || echo "$ZSH_BIN" | sudo tee -a /etc/shells >/
 
 echo "[ezomar][shell] Trocando shell de $CURRENT para $ZSH_BIN"
 sudo chsh -s "$ZSH_BIN" "$USER"
+
+# O chsh vale a partir do próximo login, e a sessão do systemd em curso segue
+# com o SHELL antigo. Isso morde de um jeito silencioso: o herdr sobe DEPOIS
+# deste módulo, no mesmo dia do format, herda SHELL=bash e abre todos os panes
+# em bash. Aí os aliases do .zshrc (clz, clp, clt...) simplesmente não existem,
+# e parece que os dotfiles não foram aplicados quando o problema é outro.
+if systemctl --user set-environment "SHELL=$ZSH_BIN" 2>/dev/null; then
+  echo "[ezomar][shell] SHELL da sessão do systemd ajustado para $ZSH_BIN."
+  # Só reinicia o que já estiver de pé; num install limpo o herdr nem existe
+  # ainda, e o módulo 56 vai criá-lo com o ambiente já correto.
+  if systemctl --user is-active herdr.service >/dev/null 2>&1; then
+    echo "[ezomar][shell] O herdr está rodando com o SHELL antigo; reinicie-o quando"
+    echo "[ezomar][shell] puder para que os panes novos nasçam em $ZSH_BIN:"
+    echo "[ezomar][shell]   systemctl --user restart herdr.service"
+  fi
+fi
+
 echo "[ezomar][shell] Vale a partir do próximo login."
