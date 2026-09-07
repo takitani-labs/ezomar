@@ -5,6 +5,13 @@ set -uo pipefail
 #
 #   bash scripts/herdr-pane-session.sh              todos os panes
 #   bash scripts/herdr-pane-session.sh tjsp         só os que casam com o texto
+#   bash scripts/herdr-pane-session.sh --here       o pane onde o comando roda
+#   bash scripts/herdr-pane-session.sh --resume     idem, e já retoma a conversa
+#
+# O modo --here existe porque a pergunta real nunca é "quais panes existem": é
+# "eu estou olhando para um pane vazio, o que rodava AQUI". O herdr exporta
+# HERDR_PANE_ID e HERDR_TAB_ID no ambiente de cada pane, então o pane sabe quem
+# é e não há nada para o humano digitar nem adivinhar.
 #
 # Por que existe: o herdr guarda o scrollback na MEMÓRIA do servidor, nunca em
 # disco. Então o histórico do pane, onde o `claude --resume <uuid>` ficava
@@ -18,6 +25,32 @@ set -uo pipefail
 # olha o arquivo atual e, para o que já sumiu dele, os snapshots por ordem de
 # recência.
 
+MODE="${1:-}"
+if [ "$MODE" = "--here" ] || [ "$MODE" = "--resume" ]; then
+  [ -n "${HERDR_TAB_ID:-}" ] || {
+    echo "[ezomar][pane-session] Este comando só funciona dentro de um pane do herdr." >&2
+    exit 1
+  }
+  # O rótulo da aba é o que casa com o que foi colhido; o id não serve, porque
+  # os ids da API mudam a cada sessão do servidor.
+  LABEL="$(herdr tab list 2>/dev/null | python3 -c '
+import json, os, sys
+want = os.environ.get("HERDR_TAB_ID")
+try:
+    for t in json.load(sys.stdin)["result"]["tabs"]:
+        if t.get("tab_id") == want:
+            print(t.get("label") or "")
+            break
+except Exception:
+    pass
+')"
+  [ -n "$LABEL" ] || {
+    echo "[ezomar][pane-session] Não consegui descobrir o nome desta aba." >&2
+    exit 1
+  }
+  set -- "$LABEL"
+fi
+
 SESSION="$HOME/.config/herdr/session.json"
 SNAPSHOTS="$HOME/.config/herdr/session-snapshots"
 PROFILE_MAP="${CLAUDE_SESSION_PROFILE_CACHE:-$HOME/.local/state/claude-session-profile.tsv}"
@@ -26,14 +59,21 @@ HARVEST="${EZOMAR_PANE_HARVEST:-$HOME/.local/state/ezomar/pane-session-harvest.t
 [ -s "$SESSION" ] || { echo "[ezomar][pane-session] $SESSION ausente." >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "[ezomar][pane-session] python3 ausente." >&2; exit 1; }
 
-SESSION="$SESSION" SNAPSHOTS="$SNAPSHOTS" PROFILE_MAP="$PROFILE_MAP" HARVEST="$HARVEST" \
-python3 - "${1:-}" <<'PYEOF'
+# No --resume o script vira uma coisa so: descobre e executa. Imprimir um
+# comando para a pessoa copiar e colar dentro do mesmo terminal onde ela ja
+# esta seria trabalho a toa.
+ONLY_CMD=false
+[ "$MODE" = "--resume" ] && ONLY_CMD=true
+
+OUT="$(SESSION="$SESSION" SNAPSHOTS="$SNAPSHOTS" PROFILE_MAP="$PROFILE_MAP" HARVEST="$HARVEST" \
+  ONLY_CMD="$ONLY_CMD" python3 - "${1:-}" <<'PYEOF'
 import glob
 import json
 import os
 import sys
 
 FILTER = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
+ONLY_CMD = os.environ.get("ONLY_CMD") == "true"
 SESSION = os.environ["SESSION"]
 SNAPSHOTS = os.environ["SNAPSHOTS"]
 PROFILE_MAP = os.environ["PROFILE_MAP"]
@@ -133,6 +173,10 @@ for label, cwd, uuid, origin in selected:
     cmd = f"claude --resume {uuid}"
     if profile:
         cmd = f"CLAUDE_CONFIG_DIR=$HOME/.claude-profiles/{profile} {cmd}"
+    if ONLY_CMD:
+        # So a primeira, e crua: quem consome e o shell, nao um humano.
+        print(f'cd "{cwd}" && {cmd}')
+        break
     print(f"  {label.ljust(width)}  {short}  [{origin}]")
     print(f"  {''.ljust(width)}  cd {short} && {cmd}")
 
@@ -143,3 +187,19 @@ if lost:
         print("[ezomar][pane-session] Não há snapshots. Ligue o timer:")
         print("[ezomar][pane-session]   systemctl --user enable --now ezomar-herdr-snapshot.timer")
 PYEOF
+)"
+
+if [ "$ONLY_CMD" != true ]; then
+  printf '%s\n' "$OUT"
+  exit 0
+fi
+
+CMD="$(printf '%s\n' "$OUT" | grep -m1 '^cd ' || true)"
+if [ -z "$CMD" ]; then
+  echo "[ezomar][pane-session] Nenhuma sessao conhecida para esta aba." >&2
+  printf '%s\n' "$OUT" >&2
+  exit 1
+fi
+
+echo "[ezomar][pane-session] Retomando: $CMD"
+eval "$CMD"
