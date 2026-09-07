@@ -91,6 +91,20 @@ INCLUDE=(
                               # Secret Key do Emergency Kit. São 4 KB, e o
                               # tarball já carrega chave SSH privada e GnuPG.
 
+  # --- sessões de aplicativo: o que se perde sem barulho ---------------------
+  # Nenhuma destas é credencial nem código, e por isso passaram batido: são as
+  # janelas abertas. Sem elas a máquina nova liga funcionando e vazia, e o que
+  # se perde só aparece semanas depois, quando alguém procura uma aba ou uma
+  # query que estava ali.
+  .config/JetBrains           # consoles SQL do DataGrip (367 arquivos aqui) e as
+                              # fontes de dados; o volume real está em
+                              # .local/share/JetBrains, que fica de fora
+  .mozilla/firefox            # os cinco perfis e suas abas; nada disso está em
+                              # sync de nuvem nenhum
+  .config/google-chrome       # Sessions/ carrega as abas abertas
+  .config/hachi               # bancos registrados (também no chezmoi, cifrado)
+  .local/share/hachi
+
   # --- estado que ninguém mais reporia --------------------------------------
   .config/meeting-rig         # contexto pessoal do mrig
   "$MANIFEST_REL"             # manifesto dos repos, gerado abaixo
@@ -147,6 +161,15 @@ EXCLUDE_PATTERNS=(
   '.local/share/opencode/snapshot'
   # herdr installs its plugins again and recreates runtime/cache state. Keeping
   # the 323 MB tree would also preserve an orphaned 311 MB clone forever.
+  # O Chrome guarda 4 GB de Service Worker e 1 GB de IndexedDB, todo regenerável,
+  # e o Extensions volta sozinho na primeira sincronização do perfil.
+  '.config/google-chrome/*/Service Worker'
+  '.config/google-chrome/*/IndexedDB'
+  '.config/google-chrome/*/Cache'
+  '.config/google-chrome/*/Code Cache'
+  '.config/google-chrome/*/GPUCache'
+  '.mozilla/firefox/*/cache2'
+  '.mozilla/firefox/*/storage/default/*/cache'
   '.config/herdr/plugins'
   '.config/herdr/*.log'
   '.config/herdr/*.sock'
