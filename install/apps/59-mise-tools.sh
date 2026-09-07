@@ -39,10 +39,25 @@ for bin in opencode codex grok bun node uv go gh; do
 done
 
 # O kimi não é gerenciado pelo mise nem por npm: é um binário próprio em
-# ~/.kimi-code/bin que se atualiza sozinho por CDN. Ele viaja no tarball do
-# backup-ai (a lista inclui .kimi-code), então numa restauração ele volta
-# inteiro. Numa instalação SEM backup, precisa ser instalado à mão.
-if ! command -v kimi >/dev/null 2>&1 && [ ! -x "$HOME/.kimi-code/bin/kimi" ]; then
-  echo "[ezomar][mise] Aviso: kimi ausente. Ele não vem daqui nem do npm;"
-  echo "[ezomar][mise] chega pelo restore (~/.kimi-code) ou pelo instalador oficial."
+# ~/.kimi-code que se atualiza sozinho por CDN. Numa restauração ele já volta
+# inteiro, porque .kimi-code está na lista do backup-ai; o instalador só é
+# necessário numa máquina que nasce sem backup.
+#
+# O script oficial também mexe em .bashrc, .profile e config.fish para pôr o
+# binário no PATH. Aqui isso é ruído: quem manda no PATH é o chezmoi. Ele é
+# idempotente, então rodar de novo depois de uma restauração não quebra nada,
+# mas também não há motivo para rodar.
+if command -v kimi >/dev/null 2>&1 || [ -x "$HOME/.kimi-code/bin/kimi" ]; then
+  echo "[ezomar][mise] kimi já presente ($("$HOME/.kimi-code/bin/kimi" --version 2>/dev/null || echo '?'))."
+elif [ "${EZOMAR_INSTALL_KIMI:-true}" != true ]; then
+  echo "[ezomar][mise] kimi ausente; instalação desligada por EZOMAR_INSTALL_KIMI."
+elif ! command -v curl >/dev/null 2>&1; then
+  echo "[ezomar][mise] kimi ausente e curl não existe; instale à mão." >&2
+else
+  echo "[ezomar][mise] Instalando o kimi pelo instalador oficial..."
+  if curl -fsSL https://code.kimi.ai/kimi-code/install.sh | bash; then
+    echo "[ezomar][mise] kimi instalado em ~/.kimi-code."
+  else
+    echo "[ezomar][mise] Aviso: o instalador do kimi falhou; siga sem ele." >&2
+  fi
 fi
