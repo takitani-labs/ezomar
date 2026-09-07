@@ -174,7 +174,7 @@ EXCLUDE_PATTERNS=(
   '.config/google-chrome/*/GPUCache'
   '.mozilla/firefox/*/cache2'
   '.mozilla/firefox/*/storage/default/*/cache'
-  '.config/herdr/plugins'
+  # (os plugins do herdr são excluídos logo abaixo, um a um, preservando config/)
   '.config/herdr/*.log'
   '.config/herdr/*.sock'
   '.config/herdr/config.toml.bak'
@@ -282,6 +282,23 @@ for m in "${!MANAGED_SET[@]}"; do
 done
 
 TAR_ARGS=()
+# Os plugins do herdr são 323 MB de clone regenerável (o módulo 70 os refaz),
+# menos o config/, que são 12 KB que ninguém repõe: é lá que o collie guarda o
+# .env com o host do tailnet que ele serve. Excluir a pasta inteira levava isso
+# junto, e só se descobriu quando o serviço não subiu na máquina nova.
+#
+# O tar não tem "exclua tudo menos X", então a lista é montada aqui: cada filho
+# direto de plugins/ vira um --exclude, exceto config. Assim um plugin novo
+# continua sendo excluído sozinho, sem ninguém precisar lembrar de listá-lo.
+if [ -d "$HOME/.config/herdr/plugins" ]; then
+  for entry in "$HOME"/.config/herdr/plugins/*; do
+    [ -e "$entry" ] || continue
+    name="$(basename -- "$entry")"
+    [ "$name" = config ] && continue
+    EXCLUDE_PATTERNS+=(".config/herdr/plugins/$name")
+  done
+fi
+
 for x in "${EXCLUDE_PATTERNS[@]}"; do TAR_ARGS+=(--exclude="$x"); done
 if [ ${#MANAGED_EXCLUDES[@]} -gt 0 ]; then
   while IFS= read -r x; do TAR_ARGS+=(--exclude="$x"); done < <(printf '%s\n' "${MANAGED_EXCLUDES[@]}" | sort)
