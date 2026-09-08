@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Hachi
+GenericName=Database IDE
+Comment=Compila a versão atual e abre a GUI
+Exec=hachi-dev
+Icon=applications-development
+Terminal=false
+Categories=Development;Database;
+StartupNotify=true

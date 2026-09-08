@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Compila o hachi do código atual e abre a GUI.
+#
+# O ponto é nunca abrir uma versão velha: o binário compilado envelhece em
+# silêncio, e descobrir isso é caro (você depura um comportamento que já
+# consertou). Aqui o cargo decide o que refazer, então quando nada mudou o
+# atalho abre na hora.
+#
+# Chamado de um atalho de teclado ou do menu, não existe terminal para ver a
+# saída. Por isso o progresso e o erro vão para notificação, e o log completo
+# fica em disco com o caminho na própria notificação.
+#
+# Botões:
+#   HACHI_REPO     onde está o repositório (padrão ~/work/repos/takitani-labs/hachi)
+#   HACHI_PROFILE  release (padrão) ou debug, se você quiser build rápido
+
+REPO="${HACHI_REPO:-$HOME/work/repos/takitani-labs/hachi}"
+PROFILE="${HACHI_PROFILE:-release}"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/hachi-dev.log"
+APP="Hachi"
+
+notify() { command -v notify-send >/dev/null 2>&1 && notify-send -a "$APP" "$@" || true; }
+
+[ -d "$REPO" ] || { notify -u critical "$APP" "Repositório não encontrado em $REPO"; exit 1; }
+cd "$REPO" || exit 1
+
+# O cargo do rustup vive em ~/.cargo/bin, que um lançador gráfico não herda:
+# .desktop e atalho do Hyprland partem de um ambiente sem o PATH do shell.
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+command -v cargo >/dev/null 2>&1 || { notify -u critical "$APP" "cargo não encontrado no PATH"; exit 1; }
+
+# A GPUI cai para um cliente headless sem WAYLAND_DISPLAY e nenhuma janela
+# aparece, sem erro nenhum. Mesma recuperação que o dev.sh do repo faz.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ]; then
+  eval "$(systemctl --user show-environment 2>/dev/null \
+    | grep -E '^(WAYLAND_DISPLAY|DISPLAY)=' | sed 's/^/export /')" || true
+fi
+
+BUILD_ARGS=(build -p hachi-cli)
+[ "$PROFILE" = release ] && BUILD_ARGS+=(--release)
+
+mkdir -p "$(dirname "$LOG")"
+{
+  echo "=== $(date -Is) build $PROFILE"
+  git -C "$REPO" log --oneline -1 2>/dev/null
+} >"$LOG"
+
+notify "$APP" "Compilando ($PROFILE)…"
+if ! cargo "${BUILD_ARGS[@]}" >>"$LOG" 2>&1; then
+  # As últimas linhas do cargo dizem o que quebrou; a notificação leva um
+  # resumo e o log inteiro fica no disco para quem quiser o resto.
+  ERR="$(grep -m3 -E '^error' "$LOG" | head -3)"
+  notify -u critical "$APP" "Falhou ao compilar
+${ERR:-veja o log}
+
+$LOG"
+  exit 1
+fi
+
+BIN="$REPO/target/$PROFILE/hachi"
+[ -x "$BIN" ] || { notify -u critical "$APP" "Compilou mas não achei $BIN"; exit 1; }
+
+# exec para o processo do lançador sair de cena: sem isso ele fica pendurado
+# como pai da GUI e o atalho parece travado enquanto o app estiver aberto.
+exec "$BIN" gui
