@@ -18,7 +18,13 @@ set -euo pipefail
 # 1password-cli porque o format-day manda o humano rodar `ops` antes de qualquer
 # outra coisa, e sem o binário esse passo ficava num laço pedindo um comando que
 # não existia. O Omarchy serve a mesma versão do próprio repositório.
-PKGS=(zsh atuin unzip mosh 1password-cli)
+# gitleaks e shellcheck não são ferramentas de conforto: o hook de pre-push
+# chama o gitleaks e, sem ele, o push segue SEM varrer segredos, avisando que
+# isso não deveria acontecer numa estação da Exato. O shellcheck é o que este
+# repo exige de todo script; sem ele o lint simplesmente não roda e ninguém
+# percebe. Os dois faltaram na primeira máquina Omarchy e só apareceram quando
+# alguma coisa passou batido.
+PKGS=(zsh atuin unzip mosh 1password-cli gitleaks shellcheck)
 
 # Dependências do meeting-rig (módulo 74), que só roda quando o repo de
 # ferramentas está configurado. Instalar sempre deixaria dois pacotes de áudio e

@@ -149,17 +149,27 @@ def matches(label, cwd, uuid):
     return not FILTER or FILTER in f"{label} {cwd} {uuid or ''}".lower()
 
 
-selected = [row for row in harvested if matches(row[0], row[1], row[2])]
+# Ordem de confianca, e ela importa porque --resume usa a PRIMEIRA linha: o
+# indice vivo sabe o que roda agora, o snapshot sabe o que rodava ha pouco, e a
+# colheita e memoria de tela, util so para o que os dois ja esqueceram. Antes a
+# colheita vinha na frente e podia responder por um pane que o indice conhecia.
+selected = []
 for key, (label, cwd, uuid, origin) in rows.items():
     if not matches(label, cwd, uuid):
         continue
     selected.append((label, cwd, uuid, origin))
+selected.sort(key=lambda r: 0 if r[3] == "atual" else 1)
+selected += [row for row in harvested if matches(row[0], row[1], row[2])]
 
 if not selected:
     print("[ezomar][pane-session] Nenhum pane bate com o filtro.")
     sys.exit(0)
 
-selected.sort()
+# Confianca primeiro, nome depois. Uma ordenacao puramente alfabetica aqui
+# desfazia a prioridade montada acima, e como --resume pega a primeira linha,
+# bastava o nome da aba comecar com letra menor para a colheita ganhar do
+# indice.
+selected.sort(key=lambda r: (0 if r[3] == "atual" else 1 if str(r[3]).startswith("snapshot") else 2, r[0]))
 width = max(len(r[0]) for r in selected)
 lost = 0
 for label, cwd, uuid, origin in selected:
