@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Claude Code statusline powered by ai-usagebar
+# (https://github.com/akitaonrails/ai-usagebar)
+#
+# One script serves every profile: the profile is derived from
+# CLAUDE_CONFIG_DIR (set by the clm/clt/clp/clr aliases in ~/.zshrc),
+# falling back to ~/.claude. Each profile gets its own cache dir so the
+# accounts never serve each other's cached usage.
+set -o pipefail
+
+input=$(cat 2>/dev/null)
+model=$(jq -r '.model.display_name // empty' <<<"$input" 2>/dev/null)
+
+cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+profile=$(basename "$cfg")
+[[ "$profile" == ".claude" ]] && profile="default"
+
+# Onde o binario estiver: o instalador proprio do ai-usagebar poe em
+# ~/.local/bin, o pacote do AUR poe em /usr/bin, e o caminho fixo fazia a
+# statusline dizer "usage n/a" numa maquina onde o binario existia.
+AI_USAGEBAR="$(command -v ai-usagebar || echo "$HOME/.local/bin/ai-usagebar")"
+
+out=$("$AI_USAGEBAR" --vendor anthropic \
+  --creds-path "$cfg/.credentials.json" \
+  --cache-dir "$HOME/.cache/ai-usagebar/profiles/$profile" \
+  --json \
+  --format '{plan} · S {session_pct}% ({session_reset}) · W {weekly_pct}% ({weekly_reset})' 2>/dev/null)
+
+# Waybar JSON text comes wrapped in Pango <span> markup; strip it and map
+# the usage class to an ANSI color instead.
+text=$(jq -r '.text // empty' <<<"$out" 2>/dev/null | sed -E 's/<[^>]+>//g')
+class=$(jq -r '.class // empty' <<<"$out" 2>/dev/null)
+
+if [[ -z "$text" ]]; then
+  text="usage n/a"
+  class=""
+fi
+
+case "$class" in
+  low)      color=$'\033[32m' ;;
+  mid)      color=$'\033[33m' ;;
+  high)     color=$'\033[33m' ;;
+  critical) color=$'\033[31m' ;;
+  *)        color=$'\033[2m' ;;
+esac
+reset=$'\033[0m'
+dim=$'\033[2m'
+cyan=$'\033[36m'
+
+line=""
+[[ -n "$model" ]] && line="${cyan}${model}${reset} ${dim}|${reset} "
+line+="${color}${text}${reset} ${dim}[${profile}]${reset}"
+printf '%s\n' "$line"
