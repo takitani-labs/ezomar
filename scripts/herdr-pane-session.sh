@@ -33,21 +33,47 @@ if [ "$MODE" = "--here" ] || [ "$MODE" = "--resume" ]; then
   }
   # O rótulo da aba é o que casa com o que foi colhido; o id não serve, porque
   # os ids da API mudam a cada sessão do servidor.
-  LABEL="$(herdr tab list 2>/dev/null | python3 -c '
+  # Rotulo COMPLETO, "workspace/aba", e nao so o nome da aba. Buscar por
+  # substring do nome sozinho e perigoso: "infos" casa com "uinfos" de outro
+  # espaco, e o clres de um pane do mantis retomava uma conversa do
+  # dd-intelligence. Duas abas com o mesmo nome em espacos diferentes tambem
+  # sao comuns aqui.
+  LABEL="$(
+    {
+      herdr workspace list 2>/dev/null
+      echo "---"
+      herdr tab list 2>/dev/null
+    } | python3 -c '
 import json, os, sys
+
 want = os.environ.get("HERDR_TAB_ID")
-try:
-    for t in json.load(sys.stdin)["result"]["tabs"]:
-        if t.get("tab_id") == want:
-            print(t.get("label") or "")
-            break
-except Exception:
-    pass
+blocks = sys.stdin.read().split("---")
+
+def parse(block, key):
+    try:
+        return json.loads(block)["result"][key]
+    except Exception:
+        return []
+
+workspaces = {w.get("workspace_id") or w.get("id"): w.get("label") for w in parse(blocks[0], "workspaces")}
+for t in parse(blocks[1], "tabs"):
+    if t.get("tab_id") == want:
+        ws = workspaces.get(t.get("workspace_id")) or t.get("workspace_id") or "?"
+        print("%s/%s" % (ws, t.get("label") or "?"))
+        break
 ')"
   [ -n "$LABEL" ] || {
     echo "[ezomar][pane-session] Não consegui descobrir o nome desta aba." >&2
     exit 1
   }
+  # EXACT diz ao python para comparar o rotulo inteiro em vez de procurar o
+  # texto dentro dele; sem isso o cuidado acima se perderia no filtro.
+  # O diretorio do pane entra como segundo sinal. O indice rotula o espaco pelo
+  # id ("wW/omarchy") e a API pelo nome ("ezomar/omarchy"), entao comparar o
+  # rotulo inteiro rejeitaria linhas boas; comparar so a aba aceitaria linhas de
+  # outro espaco. A aba exata mais o diretorio resolve os dois.
+  export EZOMAR_PANE_EXACT=true
+  export EZOMAR_PANE_CWD="$PWD"
   set -- "$LABEL"
 fi
 
@@ -145,8 +171,25 @@ if os.path.exists(HARVEST):
         harvested.append((label, parts[2], parts[1], "colhido da tela"))
 
 
+EXACT = os.environ.get("EZOMAR_PANE_EXACT") == "true"
+HERE_CWD = os.environ.get("EZOMAR_PANE_CWD") or ""
+
+
 def matches(label, cwd, uuid):
-    return not FILTER or FILTER in f"{label} {cwd} {uuid or ''}".lower()
+    if not FILTER:
+        return True
+    if not EXACT:
+        return FILTER in f"{label} {cwd} {uuid or ''}".lower()
+    # A aba tem de bater inteira: "infos" nao pode casar com "uinfos".
+    want_tab = FILTER.rsplit("/", 1)[-1]
+    have_tab = label.lower().rsplit("/", 1)[-1]
+    if want_tab != have_tab:
+        return False
+    # E o espaco tem de bater por nome OU o diretorio por caminho, porque as
+    # duas fontes nomeiam o espaco de jeitos diferentes.
+    if label.lower() == FILTER:
+        return True
+    return HERE_CWD != "" and os.path.realpath(cwd) == os.path.realpath(HERE_CWD)
 
 
 # Ordem de confianca, e ela importa porque --resume usa a PRIMEIRA linha: o
