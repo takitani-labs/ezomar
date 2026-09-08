@@ -90,6 +90,16 @@ INCLUDE=(
   .config/op                  # inscrição do 1Password: sem ela, entrar exige a
                               # Secret Key do Emergency Kit. São 4 KB, e o
                               # tarball já carrega chave SSH privada e GnuPG.
+  .local/share/keyrings       # cofre do gnome-keyring: senhas de banco do hachi
+  .local/share/kwalletd       # e as chaves de API que ele guarda. Ficam aqui as
+                              # duas variantes porque o cofre muda com o ambiente
+                              # gráfico e um não lê o outro: sair do KDE para o
+                              # Hyprland apagou as senhas do hachi sem apagar
+                              # arquivo nenhum, e as conexões passaram a falhar
+                              # com "invalid configuration". O arquivo é cifrado
+                              # com a senha de login, então numa máquina com
+                              # outra senha ele não abre: a recuperação de
+                              # verdade é hachi-secrets-from-pgpass.
 
   # --- sessões de aplicativo: o que se perde sem barulho ---------------------
   # Nenhuma destas é credencial nem código, e por isso passaram batido: são as
