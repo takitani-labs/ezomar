@@ -51,21 +51,39 @@ BORG_PASSPHRASE="$(borg-passphrase)" \
 
 ## O que fica de fora
 
-Medido neste home em 2026-09-09: de 440 GB, uns 130 GB são coisa que o gerenciador
-refaz sozinho. `.venv` sozinho tinha 52 GB.
+Medido em 2026-09-09, depois da limpeza dos worktrees do mantis (265 para 5, que
+sozinha tirou 241 GB do home): **90,1 GB e 840.881 arquivos entram**, 137 GB ficam
+de fora.
 
 Ficam de fora os `.venv`, `node_modules`, `__pycache__`, os caches de linguagem
 (`.rustup`, `.cargo/registry`, `.nuget/packages`, `.npm`, `go/pkg`), o `~/.cache`
 e a lixeira. Os `target/` do cargo saem por `exclude_caches`, porque o próprio
-cargo escreve `CACHEDIR.TAG` lá dentro.
+cargo escreve `CACHEDIR.TAG` lá dentro: são 55 GB, a maior linha da lista.
+
+Saída de build do .NET sai por `**/bin/Debug`, `**/bin/Release`, `**/obj/Debug` e
+`**/obj/Release`. É o segmento `Debug`/`Release` que torna isso seguro: exclui
+sem tocar num `bin/` qualquer que guarde script de verdade.
+
+`~/.local/share/mise` e `~/.local/share/NuGet` saem porque são runtime e pacote
+baixado (7,4 GB). O `~/.local/share/opencode` FICA: os 9,8 GB de `opencode.db`
+são o histórico das sessões, o equivalente ao que `.claude-profiles` guarda.
+
+`work/repos/references` sai inteiro. São clones de repositório dos outros, e na
+medição 38 dos 42 estavam idênticos ao remoto: o que se perde é um `git clone`,
+e o que se ganha são 20 GB e 206 mil arquivos em toda execução. **O que essa
+exclusão não cobre é alteração local.** Na hora de excluir, quatro tinham
+trabalho só ali (`react-doctor`, `ServiceStack` e `tweakcc` sujos, `omarchy` com
+um commit não enviado). Trabalho local em `references` só sobrevive se for
+commitado e enviado.
 
 `~/mnt` fica de fora porque é onde moram os mounts: sem essa linha o backup
 tentaria engolir os 27 TB do NAS e o espelho do kage, passando por si mesmo no
 caminho. `one_file_system: true` é a segunda barreira para a mesma coisa.
 
-`dist`, `build`, `bin` e `obj` **não** estão excluídos, de propósito: os nomes
-são genéricos demais e em vários repositórios aqui guardam conteúdo real. Juntos
-dão uns 8 GB, e não vale descobrir a exclusão errada no dia da restauração.
+`dist`, `build` e os `bin/` genéricos **não** estão excluídos, de propósito: esses
+nomes, sozinhos, aparecem em repositório onde guardam conteúdo real, e o dia da
+restauração é o pior lugar para descobrir a exclusão errada. Só a saída do .NET
+sai, e sai pelo caminho `Debug`/`Release`, não pelo nome da pasta.
 
 Para não gravar um diretório específico, largue um arquivo `.nobackup` dentro
 dele.

@@ -51,14 +51,33 @@ exclude_patterns:
   - /home/opik/.nuget/packages
   - /home/opik/.npm
   - /home/opik/go/pkg
+  # Runtime e pacote baixado, que um comando refaz: `mise install` e o primeiro
+  # `dotnet restore`. Sao 7,4 GB e nenhum byte deles e trabalho de ninguem.
+  - /home/opik/.local/share/mise
+  - /home/opik/.local/share/NuGet
+  # Clones de repositorio dos outros. Medido em 09/09/2026: dos 42 ali, 38 estavam
+  # identicos ao remoto. O que se perde ao excluir e um `git clone`, e o que se
+  # ganha sao 20 GB e 206 mil arquivos em toda execucao.
+  #
+  # O que ISTO nao cobre: alteracao local. Quatro repos tinham trabalho so ali
+  # (react-doctor, ServiceStack, tweakcc sujos; omarchy com commit nao enviado).
+  # Se voltar a existir trabalho local em algum, commite: aqui ele nao viaja.
+  - /home/opik/work/repos/references
+  # Saida de build do .NET. O segmento Debug/Release e o que torna isto seguro:
+  # exclui `bin/Debug` sem tocar num `bin/` qualquer que tenha script de verdade.
+  - '**/bin/Debug'
+  - '**/bin/Release'
+  - '**/obj/Debug'
+  - '**/obj/Release'
   # Sockets e arquivos vivos: o borg avisa que não conseguiu ler e polui o log
   # com falha que não é falha.
   - /home/opik/.local/share/herdr/*.sock
 
-# `dist`, `build`, `bin` e `obj` NÃO estão excluídos de propósito: os nomes são
-# genéricos demais e em vários repositórios aqui guardam conteúdo de verdade.
-# Juntos dão uns 8 GB, que não vale o risco de descobrir a exclusão errada no
-# dia da restauração.
+# `dist`, `build` e os `bin/` genéricos continuam DENTRO de propósito: esses
+# nomes, sozinhos, aparecem em repositório onde guardam conteúdo de verdade, e o
+# dia da restauração é o pior lugar para descobrir a exclusão errada. O que saiu
+# acima foi só a saída do .NET, que se identifica pelo segmento Debug/Release:
+# medido aqui, 1,1 GB em `bin/Debug` espalhados por 73 projetos.
 
 keep_daily: 7
 keep_weekly: 4
