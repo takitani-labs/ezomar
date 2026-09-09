@@ -1,0 +1,17 @@
+[Unit]
+Description=Monta os shares SMB do ZEUS (NAS)
+# O gvfs precisa da sessão gráfica: ele publica os mounts sob $XDG_RUNTIME_DIR e
+# fala com o chaveiro, que só está destrancado depois do login.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Um NAS desligado não é falha do login: o serviço sai em silêncio e o próximo
+# `zeus-mount` na mão resolve.
+ExecStart=-%h/.local/bin/zeus-mount
+ExecStop=-%h/.local/bin/zeus-mount umount
+
+[Install]
+WantedBy=graphical-session.target

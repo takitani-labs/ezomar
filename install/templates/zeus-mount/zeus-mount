@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Monta os shares SMB do NAS (ZEUS) como usuário, sem root.
+#
+#   zeus-mount            monta o que faltar
+#   zeus-mount umount     desmonta todos
+#   zeus-mount status     lista o que está montado
+#
+# Usa gvfs e não `mount -t cifs`: cifs pede root a cada mount ou uma linha no
+# fstab com credencial em arquivo, enquanto o gvfs monta no espaço do usuário e
+# ainda aparece na barra lateral do Nautilus. Os links em ~/mnt/zeus existem
+# porque o caminho real do gvfs
+# (/run/user/1000/gvfs/smb-share:server=...,share=...) não se digita.
+#
+# A senha sai do chaveiro em tempo de execução e vai por stdin para o gio. O
+# gvfs guarda senha sozinho quando alguém digita na janela dele, mas um mount
+# feito por script nunca passa por essa janela, então a busca é feita aqui e o
+# valor não aparece em argv nem em arquivo de configuração.
+#
+# Para gravar a senha uma vez:
+#   secret-tool store --label='ZEUS SMB' \
+#     server 192.168.1.3 protocol smb user admin service zeus-mount
+
+SERVER="${ZEUS_HOST:-192.168.1.3}"
+USER_NAME="${ZEUS_USER:-admin}"
+LINK_DIR="${ZEUS_LINK_DIR:-$HOME/mnt/zeus}"
+GVFS_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gvfs"
+# Os que pedem login vêm primeiro só para o erro aparecer cedo se a senha sumir.
+SHARES=(Multimedia Exato ExatoDigital Takitani Public)
+
+say() { echo "[ezomar][zeus] $*"; }
+
+gvfs_path() {
+  local lower
+  lower="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+  echo "$GVFS_DIR/smb-share:server=$SERVER,share=$lower"
+}
+
+case "${1:-mount}" in
+  umount | unmount | u)
+    for s in "${SHARES[@]}"; do
+      gio mount -u "smb://$SERVER/$s" >/dev/null 2>&1 && say "desmontado: $s"
+    done
+    exit 0
+    ;;
+  status | s)
+    for s in "${SHARES[@]}"; do
+      if [ -d "$(gvfs_path "$s")" ]; then say "montado: $s"; else say "fora: $s"; fi
+    done
+    exit 0
+    ;;
+  mount | m | "") ;;
+  *)
+    say "Uso: zeus-mount [mount|umount|status]" >&2
+    exit 2
+    ;;
+esac
+
+command -v gio >/dev/null 2>&1 || { say "gio não encontrado (pacote gvfs)." >&2; exit 1; }
+
+# Sem responder, o gio abre um prompt e o serviço trava no login esperando algo
+# que ninguém vai digitar.
+if ! timeout 6 bash -c "exec 3<>/dev/tcp/$SERVER/445" 2>/dev/null; then
+  say "$SERVER não responde na porta 445. NAS desligado ou fora da rede." >&2
+  exit 1
+fi
+
+PASS="$(secret-tool lookup server "$SERVER" protocol smb user "$USER_NAME" service zeus-mount 2>/dev/null || true)"
+[ -n "$PASS" ] || say "Sem senha no chaveiro; só os shares abertos vão montar."
+
+mkdir -p "$LINK_DIR"
+ok=0
+for s in "${SHARES[@]}"; do
+  path="$(gvfs_path "$s")"
+  if [ ! -d "$path" ]; then
+    # Ordem dos prompts do gio: usuário, domínio, senha. O domínio em branco
+    # aceita o padrão (WORKGROUP).
+    printf '%s\n\n%s\n' "$USER_NAME" "$PASS" | timeout 30 gio mount "smb://$SERVER/$s" >/dev/null 2>&1
+    # O gio volta antes de o caminho existir: o daemon do gvfs ainda está
+    # publicando o mount quando o comando sai. Sem esta espera o script declarava
+    # falha em share que tinha acabado de montar.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ -d "$path" ] && break
+      sleep 0.5
+    done
+  fi
+  if [ -d "$path" ]; then
+    ln -sfn "$path" "$LINK_DIR/$(echo "$s" | tr '[:upper:]' '[:lower:]')"
+    ok=$((ok + 1))
+  else
+    say "não montou: $s" >&2
+  fi
+done
+
+say "$ok de ${#SHARES[@]} shares em $LINK_DIR."
