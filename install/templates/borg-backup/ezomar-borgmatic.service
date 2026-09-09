@@ -1,0 +1,27 @@
+[Unit]
+Description=Backup do home com borgmatic (Hetzner + ZEUS)
+# Sem rede não há o que fazer: o repositório do Hetzner é remoto e o do ZEUS
+# está atrás de um mount cifs.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Backup não pode competir com o trabalho de quem está na máquina. Isto o põe
+# atrás de tudo em CPU e em disco, ao custo de demorar mais, que é o certo para
+# algo que roda de madrugada.
+Nice=19
+CPUSchedulingPolicy=batch
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# O systemd de usuário não herda PATH de shell nenhum, e o borg-passphrase
+# chama o `op`.
+Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/borgmatic --verbosity 1 --syslog-verbosity 1
+# Um repositório fora do ar (NAS desligado, notebook fora de casa) não pode
+# deixar a unidade em failed para sempre: a próxima execução tenta de novo.
+SuccessExitStatus=0 1
+TimeoutStartSec=6h
+
+[Install]
+WantedBy=default.target

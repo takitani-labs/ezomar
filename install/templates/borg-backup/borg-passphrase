@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Imprime a passphrase do repositório borg, lida do 1Password em tempo de
+# execução. É isto que o `encryption_passcommand` do borgmatic chama.
+#
+# A senha não fica em arquivo de configuração porque o config do borgmatic vai
+# para o chezmoi, e o chezmoi vai para um repositório. Perder esta senha é
+# perder os dois backups de uma vez: o borg não tem recuperação.
+#
+# Um shell novo não herda a variável de sessão do 1Password, então ela é lida do
+# arquivo que o `pw-keepalive` mantém vivo. Se o arquivo não existir, o backup
+# falha aqui e falha alto, que é melhor que rodar e gravar um arquivo que
+# ninguém consegue abrir depois.
+
+ITEM="${BORG_OP_ITEM:-op://Private/Borg takidesk-home/credential}"
+SESSION_FILE="${OP_SESSION_FILE:-$HOME/.op_session}"
+
+if [ ! -s "$SESSION_FILE" ]; then
+  echo "[borg-passphrase] sem $SESSION_FILE; rode 'ops' para reabrir a sessão do 1Password." >&2
+  exit 1
+fi
+
+OP_SESSION_exatodigital="$(cat "$SESSION_FILE")" op read "$ITEM"

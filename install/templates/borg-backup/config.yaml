@@ -1,0 +1,73 @@
+# Backup do home com borgmatic, para dois repositórios.
+#
+# Hetzner é o offsite; o ZEUS é a cópia local, que é a que você usa quando o que
+# aconteceu foi apagar uma pasta sem querer, e não a casa pegar fogo. O mesmo
+# conjunto de arquivos vai para os dois, com a mesma chave.
+#
+# A passphrase sai do 1Password em tempo de execução (`borg-passphrase`), porque
+# este arquivo vive no chezmoi e chezmoi vive num repositório.
+
+source_directories:
+  - /home/opik
+
+repositories:
+  - path: ssh://u548875@u548875.your-storagebox.de:23/./backups/takidesk-home
+    label: hetzner
+  - path: /mnt/zeus-backup/backups/borg/takidesk-home
+    label: zeus
+
+encryption_passcommand: /home/opik/.local/bin/borg-passphrase
+ssh_command: ssh -i /home/opik/.ssh/hetzner-storagebox -o BatchMode=yes
+
+# zstd em nível baixo: o gargalo aqui é a rede e o disco do NAS, não a CPU, e o
+# ganho de comprimir mais que isto não paga o tempo.
+compression: zstd,3
+one_file_system: true
+
+# Marca de diretório de cache (CACHEDIR.TAG). É o que apaga os `target/` do
+# cargo sem precisar listar cada um: o próprio cargo escreve a marca lá dentro.
+exclude_caches: true
+exclude_if_present:
+  - .nobackup
+
+exclude_patterns:
+  # Os mounts. Sem isto o backup tenta engolir os 27 TB do NAS e o espelho do
+  # kage, passando por si mesmo no caminho.
+  - /home/opik/mnt
+  - /home/opik/.cache
+  - /home/opik/.local/share/Trash
+  - /home/opik/.local/share/containers
+  # Dependência baixada é coisa que o gerenciador refaz. Medido aqui: .venv
+  # sozinho tinha 52 GB, e nada disso é trabalho seu.
+  - '**/.venv'
+  - '**/venv'
+  - '**/node_modules'
+  - '**/__pycache__'
+  - '**/.pytest_cache'
+  - '**/.mypy_cache'
+  - '**/.ruff_cache'
+  - /home/opik/.rustup
+  - /home/opik/.cargo/registry
+  - /home/opik/.nuget/packages
+  - /home/opik/.npm
+  - /home/opik/go/pkg
+  # Sockets e arquivos vivos: o borg avisa que não conseguiu ler e polui o log
+  # com falha que não é falha.
+  - /home/opik/.local/share/herdr/*.sock
+
+# `dist`, `build`, `bin` e `obj` NÃO estão excluídos de propósito: os nomes são
+# genéricos demais e em vários repositórios aqui guardam conteúdo de verdade.
+# Juntos dão uns 8 GB, que não vale o risco de descobrir a exclusão errada no
+# dia da restauração.
+
+keep_daily: 7
+keep_weekly: 4
+keep_monthly: 6
+
+# Verificação completa é cara: lê o repositório inteiro. De duas em duas semanas
+# pega corrupção silenciosa antes de ela virar a única cópia.
+checks:
+  - name: repository
+    frequency: 2 weeks
+  - name: archives
+    frequency: 4 weeks

@@ -1,0 +1,15 @@
+[Unit]
+Description=Backup diário do home com borgmatic
+
+[Timer]
+# Toda noite, com uma hora de folga aleatória. A folga existe para o backup não
+# começar sempre no mesmo minuto: se ele bater com outra coisa pesada, você quer
+# que isso aconteça em uma noite, não em todas.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=1h
+# A máquina passa a noite desligada às vezes. Sem isto, um dia desligado é um
+# dia sem backup e ninguém fica sabendo.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
