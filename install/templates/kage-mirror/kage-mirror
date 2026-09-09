@@ -91,7 +91,10 @@ mkdir -p "$MOUNT"
 # virar "Transport endpoint is not connected".
 # idmap=user: o uid do kage é outro; sem isso tudo aparece como nobody.
 # compression=no: na LAN o gargalo é a CPU, não o link.
-OPTS="reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,idmap=user,compression=no,follow_symlinks=no"
+# Link simbólico fica como link, que é o padrão do sshfs: `follow_symlinks` é
+# uma flag, não um par chave=valor, e escrevê-la com `=no` derruba o mount
+# inteiro com "unknown option" em vez de ser ignorada.
+OPTS="reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,idmap=user,compression=no"
 [ "$MODE" = ro ] && OPTS="$OPTS,ro"
 
 if sshfs "$HOST:$REMOTE" "$MOUNT" -o "$OPTS"; then
