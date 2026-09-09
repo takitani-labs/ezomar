@@ -7,10 +7,10 @@ set -uo pipefail
 #   kage-mirror umount     desmonta
 #   kage-mirror status     diz o que está montado e o que tem lá dentro
 #
-# O kage guarda `mirror-fedora` (o home cru da máquina antiga) e
-# `mirror-takidesk` (o espelho contínuo desta). Monta-se o home inteiro e não
-# uma das pastas: são dois espelhos, o custo é o mesmo, e depois de um format a
-# pergunta quase nunca é "abra este diretório", é "onde é que estava aquilo".
+# Monta `mirror-fedora`, o home cru da máquina antiga, e não o home do kage
+# inteiro: é o único espelho que existe lá, e apontar direto para ele deixa o
+# caminho curto (`~/mnt/mirror-fedora/.config/...` em vez de mais um nível que
+# não separa nada).
 #
 # SOMENTE LEITURA por padrão. É um backup: o valor dele é ser idêntico ao que
 # foi copiado, e um `rm` distraído dentro de um mount montado para leitura
@@ -22,8 +22,8 @@ set -uo pipefail
 # até o TCP desistir, inclusive o `ls` de quem só passou por perto.
 
 HOST="${KAGE_HOST:-kage}"
-MOUNT="${KAGE_MIRROR_MOUNT:-$HOME/mnt/kage}"
-REMOTE="${KAGE_REMOTE_DIR:-/home/opik}"
+MOUNT="${KAGE_MIRROR_MOUNT:-$HOME/mnt/mirror-fedora}"
+REMOTE="${KAGE_REMOTE_DIR:-/home/opik/mirror-fedora}"
 
 say() { echo "[ezomar][kage] $*"; }
 
@@ -99,8 +99,13 @@ OPTS="reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,idmap=user,compress
 
 if sshfs "$HOST:$REMOTE" "$MOUNT" -o "$OPTS"; then
   say "Montado em $MOUNT ($MODE)."
-  ls -1 "$MOUNT" 2>/dev/null | grep '^mirror-' | sed 's/^/    /'
-  [ "$MODE" = ro ] && say "Somente leitura. Para escrever: kage-mirror rw"
+  # Um `du` aqui seria uma armadilha: o espelho tem terabytes e percorrer a
+  # árvore inteira por sshfs demora mais que o mount todo. Uma listagem do topo
+  # já responde a única pergunta do momento, que é "veio mesmo?".
+  ls -1 "$MOUNT" 2>/dev/null | head -8 | sed 's/^/    /'
+  # `&&` sozinho na última linha faz um mount rw bem-sucedido sair com 1, porque
+  # o teste é falso. O `|| true` mantém o código de saída no que o mount fez.
+  [ "$MODE" = ro ] && say "Somente leitura. Para escrever: kage-mirror rw" || true
 else
   say "sshfs falhou." >&2
   rmdir "$MOUNT" 2>/dev/null || true
