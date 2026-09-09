@@ -10,8 +10,51 @@ PLUGIN_ID="herdr.collie"
 COLLIE_REPO="https://github.com/AltanS/collie.git"
 COLLIE_REPO_DIR="$HOME/work/repos/references/collie"
 
+# O bun do mise não está no PATH de um shell não interativo.
+export PATH="$HOME/.local/share/mise/shims:$HOME/.bun/bin:$PATH"
+
+# --- o PWA precisa existir em disco -----------------------------------------
+# `web/dist` é gerado e está no .gitignore, então um repositório restaurado de
+# backup ou clonado de novo vem sem ele e o bridge responde "not found" em `/`.
+# Isso passa despercebido porque quem já tem o app instalado no celular
+# continua abrindo: o service worker serve o casco do cache e só a API vai à
+# rede. O celular fica preso numa versão antiga por tempo indefinido, e o que
+# se nota não é "está fora do ar", é um comportamento antigo que já foi
+# corrigido no código. Foi o que aconteceu aqui: o celular ficou meses sem
+# quebra de linha no espelho porque o build era anterior à correção.
+#
+# Roda antes de qualquer decisão sobre o plugin do herdr, porque o bridge também
+# é iniciado por unidade do systemd, sem o herdr no meio.
+build_web_if_stale() {
+  local dist="$COLLIE_REPO_DIR/web/dist/index.html"
+  local newest
+  if [ -f "$dist" ]; then
+    newest="$(find "$COLLIE_REPO_DIR/web/src" "$COLLIE_REPO_DIR/web/index.html" \
+      -newer "$dist" -print -quit 2>/dev/null || true)"
+    if [ -z "$newest" ]; then
+      echo "[ezomar][collie] PWA já compilado e atual."
+      return 0
+    fi
+    echo "[ezomar][collie] Fonte mais nova que web/dist; recompilando."
+  else
+    echo "[ezomar][collie] Sem web/dist; compilando o PWA."
+  fi
+  ( cd "$COLLIE_REPO_DIR" && bun install --frozen-lockfile >/dev/null \
+    && cd web && bun install --frozen-lockfile >/dev/null && bun run build >/dev/null ) \
+    || { echo "[ezomar][collie] Build do PWA falhou; o bridge vai responder 404 em /." >&2; return 1; }
+  echo "[ezomar][collie] PWA compilado em web/dist."
+}
+
+if [ -d "$COLLIE_REPO_DIR/web" ]; then
+  if command -v bun >/dev/null 2>&1; then
+    build_web_if_stale || true
+  else
+    echo "[ezomar][collie] bun não encontrado; não dá para compilar o PWA."
+  fi
+fi
+
 if ! command -v herdr >/dev/null 2>&1; then
-  echo "[ezomar][collie] herdr não encontrado. Pulando."
+  echo "[ezomar][collie] herdr não encontrado. Pulando o plugin."
   exit 0
 fi
 if ! command -v bun >/dev/null 2>&1; then
