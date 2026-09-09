@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Monta o home do kage aqui, por SSH, para ler os espelhos de backup.
+#
+#   kage-mirror            monta (ou diz que já está montado)
+#   kage-mirror umount     desmonta
+#   kage-mirror status     diz o que está montado e o que tem lá dentro
+#
+# O kage guarda `mirror-fedora` (o home cru da máquina antiga) e
+# `mirror-takidesk` (o espelho contínuo desta). Monta-se o home inteiro e não
+# uma das pastas: são dois espelhos, o custo é o mesmo, e depois de um format a
+# pergunta quase nunca é "abra este diretório", é "onde é que estava aquilo".
+#
+# SOMENTE LEITURA por padrão. É um backup: o valor dele é ser idêntico ao que
+# foi copiado, e um `rm` distraído dentro de um mount montado para leitura
+# apaga o original sem rede de segurança nenhuma. Para escrever de propósito,
+# `kage-mirror rw`.
+#
+# O kage vive desligado. Por isso aqui se testa a porta ANTES de chamar o
+# sshfs: sem isso o mount "sobe" e todo comando que tocar no diretório trava
+# até o TCP desistir, inclusive o `ls` de quem só passou por perto.
+
+HOST="${KAGE_HOST:-kage}"
+MOUNT="${KAGE_MIRROR_MOUNT:-$HOME/mnt/kage}"
+REMOTE="${KAGE_REMOTE_DIR:-/home/opik}"
+
+say() { echo "[ezomar][kage] $*"; }
+
+is_mounted() { mountpoint -q "$MOUNT"; }
+
+case "${1:-mount}" in
+  umount | unmount | u)
+    if ! is_mounted; then
+      say "Não está montado."
+      exit 0
+    fi
+    # fusermount é o caminho certo para um mount de usuário: `umount` pede root.
+    fusermount3 -u "$MOUNT" 2>/dev/null || fusermount -u "$MOUNT" 2>/dev/null || {
+      say "Não consegui desmontar. Se algo estiver lendo lá dentro:" >&2
+      say "  fuser -vm $MOUNT" >&2
+      exit 1
+    }
+    say "Desmontado."
+    exit 0
+    ;;
+  status | s)
+    if is_mounted; then
+      say "Montado em $MOUNT:"
+      ls -1 "$MOUNT" 2>/dev/null | sed 's/^/    /'
+      df -h "$MOUNT" 2>/dev/null | tail -1 | sed 's/^/    /'
+    else
+      say "Não montado."
+    fi
+    exit 0
+    ;;
+  rw)
+    MODE=rw
+    ;;
+  mount | m | "")
+    MODE=ro
+    ;;
+  *)
+    say "Uso: kage-mirror [mount|rw|umount|status]" >&2
+    exit 2
+    ;;
+esac
+
+command -v sshfs >/dev/null 2>&1 || {
+  say "sshfs não instalado. Rode: sudo pacman -S --needed sshfs" >&2
+  exit 1
+}
+
+if is_mounted; then
+  say "Já montado em $MOUNT."
+  exit 0
+fi
+
+# O ssh resolve o apelido pelo ~/.ssh/config; o teste de porta precisa do
+# endereço de verdade, então pergunta-se a ele em vez de repetir o IP aqui.
+ADDR="$(ssh -G "$HOST" 2>/dev/null | awk '/^hostname /{print $2}')"
+PORT="$(ssh -G "$HOST" 2>/dev/null | awk '/^port /{print $2}')"
+if ! timeout 6 bash -c "exec 3<>/dev/tcp/${ADDR:-$HOST}/${PORT:-22}" 2>/dev/null; then
+  say "$HOST não responde em ${ADDR:-$HOST}:${PORT:-22}. Ligue a máquina e tente de novo." >&2
+  exit 1
+fi
+
+mkdir -p "$MOUNT"
+
+# reconnect + ServerAlive: o wifi/roteador cai e o mount volta sozinho em vez de
+# virar "Transport endpoint is not connected".
+# idmap=user: o uid do kage é outro; sem isso tudo aparece como nobody.
+# compression=no: na LAN o gargalo é a CPU, não o link.
+OPTS="reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,idmap=user,compression=no,follow_symlinks=no"
+[ "$MODE" = ro ] && OPTS="$OPTS,ro"
+
+if sshfs "$HOST:$REMOTE" "$MOUNT" -o "$OPTS"; then
+  say "Montado em $MOUNT ($MODE)."
+  ls -1 "$MOUNT" 2>/dev/null | grep '^mirror-' | sed 's/^/    /'
+  [ "$MODE" = ro ] && say "Somente leitura. Para escrever: kage-mirror rw"
+else
+  say "sshfs falhou." >&2
+  rmdir "$MOUNT" 2>/dev/null || true
+  exit 1
+fi
