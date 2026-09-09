@@ -4,6 +4,9 @@ Description=Backup do home com borgmatic (Hetzner + ZEUS)
 # está atrás de um mount cifs.
 After=network-online.target
 Wants=network-online.target
+# Falhar em silêncio é o pior desfecho possível aqui: o silêncio se parece com
+# sucesso, noite após noite, até o dia da restauração.
+OnFailure=ezomar-borgmatic-failure@%n.service
 
 [Service]
 Type=oneshot
@@ -18,9 +21,11 @@ IOSchedulingPriority=7
 # chama o `op`.
 Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/borgmatic --verbosity 1 --syslog-verbosity 1
-# Um repositório fora do ar (NAS desligado, notebook fora de casa) não pode
-# deixar a unidade em failed para sempre: a próxima execução tenta de novo.
-SuccessExitStatus=0 1
+# `SuccessExitStatus=0 1` estava aqui para um repositório fora do ar não deixar a
+# unidade em failed. Era errado: 1 é justamente como o borgmatic relata QUALQUER
+# erro, então tratar 1 como sucesso apagava a falha inteira, e o aviso acima
+# nunca dispararia. Unidade em failed não trava nada: o timer chama de novo na
+# próxima noite, e o estado vermelho é exatamente o sinal que se quer.
 TimeoutStartSec=6h
 
 [Install]

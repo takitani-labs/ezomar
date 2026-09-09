@@ -105,5 +105,27 @@ borgmatic list --archive latest --find 'nome-do-arquivo'
 borgmatic extract --archive latest --path home/opik/caminho/do/arquivo
 ```
 
+## Quando falha
+
+`OnFailure` dispara `ezomar-borgmatic-failure@`, que manda uma notificação de
+tela com as últimas linhas de erro do journal e o comando para ver o resto.
+Backup que falha em silêncio é pior que backup nenhum: o silêncio se parece com
+sucesso, noite após noite, até o dia da restauração.
+
+As falhas prováveis, e o que a notificação vai dizer:
+
+| Sintoma no aviso | Causa | Conserto |
+|---|---|---|
+| passphrase / `op` | a sessão do 1Password venceu | rodar `ops` |
+| repositório do ZEUS recusado | NAS desligado ou fora da rede | ligar; o mount é automount |
+| Hetzner inacessível | rede ou a box fora | tentar de novo na noite seguinte |
+
+A unidade fica em `failed` até a próxima execução dar certo, e isso é de
+propósito: `systemctl --user status ezomar-borgmatic` responde "o último backup
+deu certo?" sem precisar caçar log.
+
+Para conferir sem esperar aviso nenhum, `borgmatic list` mostra a data do
+arquivo mais recente em cada repositório.
+
 Retenção: 7 diários, 4 semanais, 6 mensais. Verificação do repositório de duas
 em duas semanas, dos arquivos de quatro em quatro.

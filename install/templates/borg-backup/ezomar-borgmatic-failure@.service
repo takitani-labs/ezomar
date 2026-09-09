@@ -1,0 +1,13 @@
+[Unit]
+Description=Avisa na tela que o backup falhou (%i)
+
+[Service]
+Type=oneshot
+# Backup que falha em silêncio é pior que backup nenhum: o silêncio parece
+# sucesso, e a pessoa só descobre no dia em que precisa restaurar. Este aviso
+# existe para que a falha custe dez segundos hoje em vez de tudo depois.
+#
+# As últimas linhas do journal dizem qual repositório recusou, que é a diferença
+# entre "o NAS estava desligado" e "a sessão do 1Password venceu e a passphrase
+# não abre mais".
+ExecStart=/usr/bin/bash -lc 'notify-send -u critical -a "Backup" "Backup do home falhou" "$(journalctl --user -u %i --since -6h -o cat 2>/dev/null | grep -iE "error|refus|denied|failed|no such" | tail -3 | head -c 400)\n\njournalctl --user -u %i -e"'

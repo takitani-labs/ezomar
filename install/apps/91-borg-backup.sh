@@ -19,7 +19,8 @@ UNIT_DIR="$HOME/.config/systemd/user"
 
 say() { echo "[ezomar][borg] $*"; }
 
-for f in borg-passphrase config.yaml ezomar-borgmatic.service ezomar-borgmatic.timer; do
+for f in borg-passphrase config.yaml ezomar-borgmatic.service ezomar-borgmatic.timer \
+         ezomar-borgmatic-failure@.service; do
   [ -f "$TPL/$f" ] || { say "Template ausente: $TPL/$f" >&2; exit 1; }
 done
 
@@ -41,6 +42,7 @@ fi
 
 install -D -m 0644 "$TPL/ezomar-borgmatic.service" "$UNIT_DIR/ezomar-borgmatic.service"
 install -D -m 0644 "$TPL/ezomar-borgmatic.timer" "$UNIT_DIR/ezomar-borgmatic.timer"
+install -D -m 0644 "$TPL/ezomar-borgmatic-failure@.service" "$UNIT_DIR/ezomar-borgmatic-failure@.service"
 systemctl --user daemon-reload
 
 if "$BIN_DIR/borg-passphrase" >/dev/null 2>&1; then
