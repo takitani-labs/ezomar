@@ -219,7 +219,10 @@ Panel {
   // da conta sozinho ("Exato", "Team") nao diz de quem e a assinatura, e com
   // contas de quatro fornecedores lado a lado isso e metade da informacao.
   function vendorOf(p) {
-    var id = String(p && p.id ? p.id : "")
+    // `providerId` e como Main.qml nomeia o campo; `id` nunca existiu aqui, e
+    // por isso o fornecedor sumia de todos os rotulos em silencio: "Exato · pro"
+    // em vez de "Exato · Codex pro".
+    var id = String(p && (p.providerId || p.id) ? (p.providerId || p.id) : "")
     if (id === "claude" || id.indexOf("claude-") === 0) return "Claude"
     if (id.indexOf("codex") === 0) return "Codex"
     if (id.indexOf("ezomar-ai-usagebar-") === 0) return ""   // o nome ja e a marca
@@ -239,6 +242,27 @@ Panel {
     return parts.join(" ")
   }
 
+  // As contas Claude sao as que se revezam no trabalho; o resto e apoio. Entao
+  // elas ficam sempre no bloco de cima, mesmo esgotadas: procurar a proxima
+  // Claude no meio de uma lista misturada e o que a tabela existe para evitar.
+  function vendorRank(p) {
+    var id = String(p && (p.providerId || p.id) ? (p.providerId || p.id) : "")
+    return (id === "claude" || id.indexOf("claude-") === 0) ? 0 : 1
+  }
+
+  // O limite de um modelo so ("Fable Weekly"), que nao manda na conta mas muda
+  // o que da para fazer nela. Fica na linha de detalhe, com o nome do modelo.
+  function scopedWindow(p) {
+    var windows = limitWindows(p)
+    var best = null
+    for (var i = 0; i < windows.length; i++) {
+      var w = windows[i]
+      if (!w.long || !w.scoped) continue
+      if (!best || w.percent > best.percent) best = w
+    }
+    return best
+  }
+
   readonly property var overviewRows: {
     var rows = []
     for (var i = 0; i < providers.length; i++) {
@@ -249,10 +273,19 @@ Panel {
       var t = throttleWindow(p)
       var tFree = throttleFree(p)
       var blocked = tFree < usableFloor
+      var sc = scopedWindow(p)
       rows.push({
         index: i,
-        name: String(p.providerName || p.name || p.id || "?"),
+        name: String(p.providerName || p.name || p.providerId || "?"),
         plan: planOf(p),
+        vendorRank: vendorRank(p),
+        // Os tres numeros do planejamento, cada um respondendo uma coisa:
+        // a janela diz se da para comecar agora, a semana diz quanto sobra ate
+        // a data, e o limite do modelo diz o que da para rodar nela.
+        windowPercent: t ? Number(t.percent) : -1,
+        windowResetMs: t ? resetMsFor(t) : -1,
+        scopedLabel: sc ? String(sc.title) : "",
+        scopedPercent: sc ? Number(sc.percent) : -1,
         // O numero e o prazo sao os do ORCAMENTO: e ele que se perde.
         percent: w ? Number(w.percent) : -1,
         resetMs: ms,
@@ -267,6 +300,7 @@ Panel {
       })
     }
     rows.sort(function (a, b) {
+      if (a.vendorRank !== b.vendorRank) return a.vendorRank - b.vendorRank
       if (a.group !== b.group) return a.group - b.group
       // Sem data de reset nao ha urgencia: vai depois de quem tem prazo.
       var am = a.resetMs > 0 ? a.resetMs : Infinity
@@ -279,17 +313,32 @@ Panel {
 
   // So recomenda quem esta na disputa e tem prazo: sugerir uma conta sem data
   // de reset nao responde "use antes que vire".
+  // A primeira Claude que da para usar. Se nenhuma der, a primeira de qualquer
+  // fornecedor: quando as Claude acabaram, "use a Z.AI" e a resposta util, e
+  // insistir numa Claude esgotada so porque ela e Claude nao ajuda ninguem.
+  function recommendedIndex() {
+    var rows = overviewRows
+    var fallback = -1
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].group !== 0 || !(rows[i].resetMs > 0)) continue
+      if (rows[i].vendorRank === 0) return i
+      if (fallback < 0) fallback = i
+    }
+    return fallback
+  }
+
+  readonly property int recommended: recommendedIndex()
+
   readonly property string bestAccount: {
     var rows = overviewRows
-    if (rows.length < 2) return ""
-    if (rows[0].group !== 0 || !(rows[0].resetMs > 0)) return ""
-    return rows[0].name
+    if (rows.length < 2 || recommended < 0) return ""
+    return rows[recommended].name
   }
 
   readonly property string bestAccountIn: {
     var rows = overviewRows
-    if (rows.length === 0 || !(rows[0].resetMs > 0)) return ""
-    return formatDuration(rows[0].resetMs)
+    if (recommended < 0 || !(rows[recommended].resetMs > 0)) return ""
+    return formatDuration(rows[recommended].resetMs)
   }
 
   function formatDuration(ms) {
@@ -670,7 +719,7 @@ Panel {
 
                 width: providerSwitch.width
                 row: modelData
-                first: index === 0
+                first: index === root.recommended
                 current: modelData.index === root.providerIndex
               }
             }
@@ -958,16 +1007,17 @@ Panel {
           // janela de 5 horas esta cheia, a conta nao serve AGORA por mais
           // folga semanal que tenha, e isso precisa aparecer na linha: sem o
           // aviso, uma conta no fim da lista com 26% parece disponivel.
+          // Aqui em cima fica so o prazo da semana, que e por onde a lista esta
+          // ordenada; os percentuais desceram para a linha de detalhe. Repetir
+          // o numero nos dois lugares so tirava espaco do nome da conta.
           text: {
             if (!overviewRow.known) return "—"
-            var pct = Math.round(overviewRow.row.percent * 100) + "%"
-            var ms = overviewRow.row.resetMs
-            var main = ms > 0 ? pct + " · " + root.formatDuration(ms) : pct
             if (overviewRow.row.blocked) {
               var t = overviewRow.row.throttleResetMs
-              return main + (t > 0 ? "  ·  cheia, volta em " + root.formatDuration(t) : "  ·  cheia agora")
+              return t > 0 ? "cheia · volta em " + root.formatDuration(t) : "cheia agora"
             }
-            return main
+            var ms = overviewRow.row.resetMs
+            return ms > 0 ? "vence em " + root.formatDuration(ms) : "sem prazo"
           }
           color: overviewRow.alarming ? root.urgent : root.foreground
           font.family: root.fontFamily
@@ -975,6 +1025,45 @@ Panel {
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
         }
+      }
+
+      // Os tres numeros do Akita, um do lado do outro: a janela de agora, a
+      // semana, e o limite do modelo. Cada um responde uma pergunta diferente e
+      // sozinho nenhum deles deixa planejar: a semana diz quanto sobra ate a
+      // data, a janela diz se da para comecar agora, e o Fable diz o que da
+      // para rodar. Some a parte que o fornecedor nao reporta, em vez de
+      // mostrar um traco onde nunca vai haver numero.
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        visible: text !== ""
+        text: {
+          if (!overviewRow.row) return ""
+          var parts = []
+          var wp = overviewRow.row.windowPercent
+          if (wp >= 0) {
+            var wms = overviewRow.row.windowResetMs
+            parts.push("janela " + Math.round(wp * 100) + "%"
+              + (wms > 0 ? " · " + root.formatDuration(wms) : ""))
+          }
+          var pc = overviewRow.row.percent
+          if (pc >= 0) {
+            var pms = overviewRow.row.resetMs
+            parts.push("semana " + Math.round(pc * 100) + "%"
+              + (pms > 0 ? " · " + root.formatDuration(pms) : ""))
+          }
+          if (overviewRow.row.scopedPercent >= 0) {
+            // "Fable Weekly" vira "fable": a linha ja diz "semana" ao lado, e o
+            // que falta saber aqui e de qual modelo e o limite.
+            var name = overviewRow.row.scopedLabel.replace(/\s*weekly\s*$/i, "")
+            parts.push(name.toLowerCase() + " " + Math.round(overviewRow.row.scopedPercent * 100) + "%")
+          }
+          return parts.join("   ·   ")
+        }
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
       }
 
       Rectangle {
