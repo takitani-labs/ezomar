@@ -32,7 +32,18 @@ FLOOR="${CLAUDE_BEST_FLOOR:-0.10}"
 # Dado velho escolhe a conta errada com cara de certeza.
 MAX_AGE_MIN="${CLAUDE_BEST_MAX_AGE_MIN:-15}"
 
-MODE="${1:-pick}"
+# Excluir a conta que acabou de bater no limite: sem isto o failover devolve a
+# mesma e o troca-troca não sai do lugar.
+EXCLUDE=""
+MODE="pick"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --exclude) EXCLUDE="${2:-}"; shift 2 ;;
+    *) break ;;
+  esac
+done
+
+MODE="${1:-$MODE}"
 case "$MODE" in
   --list | -l) MODE=list ;;
   "" | pick) MODE=pick ;;
@@ -58,7 +69,7 @@ if [ -n "$newest" ]; then
   fi
 fi
 
-USAGE_DIR="$USAGE_DIR" PROFILE_DIR="$PROFILE_DIR" FLOOR="$FLOOR" MODE="$MODE" python3 <<'PYEOF'
+USAGE_DIR="$USAGE_DIR" PROFILE_DIR="$PROFILE_DIR" FLOOR="$FLOOR" MODE="$MODE" EXCLUDE="$EXCLUDE" python3 <<'PYEOF'
 import glob
 import json
 import os
@@ -69,6 +80,7 @@ USAGE_DIR = os.environ["USAGE_DIR"]
 PROFILE_DIR = os.environ["PROFILE_DIR"]
 FLOOR = float(os.environ["FLOOR"])
 MODE = os.environ["MODE"]
+EXCLUDE = os.environ.get("EXCLUDE") or ""
 now = datetime.now(timezone.utc)
 
 
@@ -111,6 +123,8 @@ for path in sorted(glob.glob(os.path.join(USAGE_DIR, "claude*.json"))):
     if not provider.startswith("claude-"):
         continue
     profile = provider[len("claude-"):]
+    if profile == EXCLUDE:
+        continue
     if not os.path.isdir(os.path.join(PROFILE_DIR, profile)):
         continue
 
