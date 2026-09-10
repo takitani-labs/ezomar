@@ -22,7 +22,12 @@ CONFIG="$HOME/.config/ezomar/config.sh"
 
 BEST="${CLAUDE_BEST_BIN:-$HOME/work/repos/takitani-labs/ezomar/scripts/claude-best-account.sh}"
 SWITCH="${HERDR_SWITCH_BIN:-$HOME/.local/bin/herdr-switch-agent-profile}"
-LOG="${XDG_STATE_HOME:-$HOME/.local/state}/ezomar/quota-failover.log"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ezomar"
+LOG="$STATE/quota-failover.log"
+# O StopFailure dispara a CADA turno que morre por cota. Sem trava, uma sessão
+# esgotada tenta migrar de novo a cada tentativa sua, e o que a pessoa vê é uma
+# pilha de notificações iguais. Uma tentativa por sessão a cada COOLDOWN.
+COOLDOWN_MIN="${EZOMAR_QUOTA_FAILOVER_COOLDOWN_MIN:-10}"
 
 note() {
   mkdir -p "$(dirname "$LOG")"
@@ -42,6 +47,15 @@ session_id="$(printf '%s' "$payload" | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("session_id") or "")
 except Exception: print("")' 2>/dev/null)"
 
+# Uma tentativa por sessão por vez. A marca é por sessão e não global, para uma
+# sessão esgotada não bloquear o failover de outra que esgote em seguida.
+stamp="$STATE/failover-$(printf '%s' "${session_id:-sem-id}" | tr -c 'A-Za-z0-9_-' '_').stamp"
+if [ -f "$stamp" ]; then
+  age_min=$(( ( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ) / 60 ))
+  [ "$age_min" -lt "$COOLDOWN_MIN" ] && exit 0
+fi
+mkdir -p "$STATE" && touch "$stamp"
+
 # Fora de um pane do herdr não há o que reexecutar: o switcher trabalha mandando
 # o pane sair e subir de novo, e sem pane isso não existe.
 [ -n "${HERDR_PANE_ID:-}" ] || give_up "fora de um pane do herdr; nada a trocar"
@@ -60,13 +74,20 @@ target="$(bash "$BEST" --exclude "$current" 2>/dev/null)"
 }
 
 note "cota de $current esgotada; migrando a sessão $session_id para $target"
-command -v notify-send >/dev/null 2>&1 && notify-send -a "Claude" \
-  "Trocando de conta" "$current esgotou. Continuando em $target." || true
 
 # O switcher já sabe fazer tudo; a única coisa que ele pede de fora é qual
 # perfil, e ele aceita isso por variável em vez de menu.
-HERDR_SWITCH_PROFILE="$target" "$SWITCH" >>"$LOG" 2>&1 \
-  || give_up "o switcher falhou ao migrar para $target"
+#
+# O aviso vem DEPOIS, e só quando deu certo. Anunciar a troca antes de tentar
+# produziu uma tela cheia de "trocando de conta" para trocas que nunca
+# aconteceram, o que é pior que silêncio: diz que resolveu e não resolveu.
+if ! HERDR_SWITCH_PROFILE="$target" "$SWITCH" >>"$LOG" 2>&1; then
+  command -v notify-send >/dev/null 2>&1 && notify-send -u critical -a "Claude" \
+    "Não consegui trocar de conta" "$current esgotou. Troque na mão com Ctrl+B A." || true
+  give_up "o switcher falhou ao migrar para $target"
+fi
 
+command -v notify-send >/dev/null 2>&1 && notify-send -a "Claude" \
+  "Conta trocada" "$current esgotou. Seguindo em $target." || true
 note "sessão $session_id agora em $target"
 exit 0

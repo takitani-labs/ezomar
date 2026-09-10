@@ -40,7 +40,12 @@ os.execvpe("claude", ["claude", "--resume", session_id], env)
 fi
 
 HERDR_BIN="${HERDR_BIN_PATH:-herdr}"
-PANE_ID="${HERDR_ACTIVE_PANE_ID:-${1:-}}"
+# HERDR_ACTIVE_PANE_ID só existe quando o herdr invoca isto por atalho de
+# teclado (Ctrl+B A), onde "o pane ativo" é o pane certo por definição. Chamado
+# de dentro de um pane — por um hook, por exemplo — quem manda é o pane que está
+# rodando, e ele se conhece por HERDR_PANE_ID. Sem esta terceira alternativa o
+# failover automático morria em "o Herdr não informou o pane ativo".
+PANE_ID="${HERDR_ACTIVE_PANE_ID:-${1:-${HERDR_PANE_ID:-}}}"
 COMPAT_BIN="${HERDR_COMPAT_BIN:-$HOME/.local/bin/herdr-server-compat}"
 
 pause_on_error() {
