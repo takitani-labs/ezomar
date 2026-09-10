@@ -75,6 +75,29 @@ target="$(bash "$BEST" --exclude "$current" 2>/dev/null)"
 
 note "cota de $current esgotada; migrando a sessão $session_id para $target"
 
+# O switcher recusa trocar enquanto o herdr reporta o pane como "working", e a
+# recusa é certa para a troca manual: ninguém quer o Ctrl+B A derrubando uma
+# resposta em andamento. Só que o StopFailure dispara EXATAMENTE no fim do turno
+# que morreu, e o herdr ainda não atualizou o estado. O turno já acabou; o que
+# falta é o herdr perceber.
+#
+# Esperar é melhor que forçar: mantém a proteção de pé para o caminho manual, e
+# se por algum motivo o estado nunca limpar, desiste em vez de interromper algo
+# de verdade.
+for _ in $(seq 1 20); do
+  state="$(herdr pane get "$HERDR_PANE_ID" 2>/dev/null \
+    | python3 -c 'import json,sys
+try: print((json.load(sys.stdin)["result"]["pane"] or {}).get("state") or "")
+except Exception: print("")' 2>/dev/null)"
+  [ "$state" != "working" ] && break
+  sleep 1
+done
+if [ "$state" = working ]; then
+  command -v notify-send >/dev/null 2>&1 && notify-send -u critical -a "Claude" \
+    "Não consegui trocar de conta" "$current esgotou, mas o pane não ficou ocioso. Ctrl+B A para trocar na mão." || true
+  give_up "pane seguiu em 'working' por 20s; não migrei a sessão $session_id"
+fi
+
 # O switcher já sabe fazer tudo; a única coisa que ele pede de fora é qual
 # perfil, e ele aceita isso por variável em vez de menu.
 #
