@@ -27,7 +27,7 @@ LOG="$STATE/quota-failover.log"
 # O StopFailure dispara a CADA turno que morre por cota. Sem trava, uma sessão
 # esgotada tenta migrar de novo a cada tentativa sua, e o que a pessoa vê é uma
 # pilha de notificações iguais. Uma tentativa por sessão a cada COOLDOWN.
-COOLDOWN_MIN="${EZOMAR_QUOTA_FAILOVER_COOLDOWN_MIN:-10}"
+COOLDOWN_MIN="${EZOMAR_QUOTA_FAILOVER_COOLDOWN_MIN:-60}"
 
 note() {
   mkdir -p "$(dirname "$LOG")"
@@ -47,15 +47,6 @@ session_id="$(printf '%s' "$payload" | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("session_id") or "")
 except Exception: print("")' 2>/dev/null)"
 
-# Uma tentativa por sessão por vez. A marca é por sessão e não global, para uma
-# sessão esgotada não bloquear o failover de outra que esgote em seguida.
-stamp="$STATE/failover-$(printf '%s' "${session_id:-sem-id}" | tr -c 'A-Za-z0-9_-' '_').stamp"
-if [ -f "$stamp" ]; then
-  age_min=$(( ( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ) / 60 ))
-  [ "$age_min" -lt "$COOLDOWN_MIN" ] && exit 0
-fi
-mkdir -p "$STATE" && touch "$stamp"
-
 # Fora de um pane do herdr não há o que reexecutar: o switcher trabalha mandando
 # o pane sair e subir de novo, e sem pane isso não existe.
 [ -n "${HERDR_PANE_ID:-}" ] || give_up "fora de um pane do herdr; nada a trocar"
@@ -63,6 +54,19 @@ mkdir -p "$STATE" && touch "$stamp"
 
 current="$(basename "${CLAUDE_CONFIG_DIR:-}" 2>/dev/null)"
 [ -n "$current" ] && [ "$current" != "." ] || give_up "não descobri o perfil atual (CLAUDE_CONFIG_DIR vazio)"
+
+# A trava é por CONTA, não por sessão, e só existe depois de uma falha.
+#
+# A primeira versão era por sessão, e a conta continuava esgotada por horas: cada
+# sessão que encostava nela tentava de novo, e o resultado foi quatro avisos
+# iguais numa noite. Quem está esgotado é a conta, então é ela que tem de
+# esperar. Em caso de sucesso não se marca nada: a sessão migrou, não há o que
+# segurar.
+stamp="$STATE/failover-conta-$(printf '%s' "$current" | tr -c 'A-Za-z0-9_-' '_').stamp"
+if [ -f "$stamp" ]; then
+  age_min=$(( ( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ) / 60 ))
+  [ "$age_min" -lt "$COOLDOWN_MIN" ] && exit 0
+fi
 
 # A conta que acabou de recusar sai da disputa, senão o failover devolve ela
 # mesma e a troca não sai do lugar.
@@ -84,10 +88,14 @@ note "cota de $current esgotada; migrando a sessão $session_id para $target"
 # Esperar é melhor que forçar: mantém a proteção de pé para o caminho manual, e
 # se por algum motivo o estado nunca limpar, desiste em vez de interromper algo
 # de verdade.
+# O campo é `agent_status`, que é o mesmo que o switcher consulta. Eu lia
+# `state`, que não existe no JSON: vinha vazio, a espera saía na primeira volta,
+# e o switcher recusava um segundo depois. Ler o campo errado aqui não dá erro,
+# dá uma espera que nunca espera.
 for _ in $(seq 1 20); do
   state="$(herdr pane get "$HERDR_PANE_ID" 2>/dev/null \
     | python3 -c 'import json,sys
-try: print((json.load(sys.stdin)["result"]["pane"] or {}).get("state") or "")
+try: print((json.load(sys.stdin)["result"]["pane"] or {}).get("agent_status") or "")
 except Exception: print("")' 2>/dev/null)"
   [ "$state" != "working" ] && break
   sleep 1
@@ -95,6 +103,7 @@ done
 if [ "$state" = working ]; then
   command -v notify-send >/dev/null 2>&1 && notify-send -u critical -a "Claude" \
     "Não consegui trocar de conta" "$current esgotou, mas o pane não ficou ocioso. Ctrl+B A para trocar na mão." || true
+  mkdir -p "$STATE" && touch "$stamp"
   give_up "pane seguiu em 'working' por 20s; não migrei a sessão $session_id"
 fi
 
@@ -107,6 +116,7 @@ fi
 if ! HERDR_SWITCH_PROFILE="$target" "$SWITCH" >>"$LOG" 2>&1; then
   command -v notify-send >/dev/null 2>&1 && notify-send -u critical -a "Claude" \
     "Não consegui trocar de conta" "$current esgotou. Troque na mão com Ctrl+B A." || true
+  mkdir -p "$STATE" && touch "$stamp"
   give_up "o switcher falhou ao migrar para $target"
 fi
 
