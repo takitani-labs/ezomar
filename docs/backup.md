@@ -16,9 +16,20 @@ desligada.
 
 ## A senha
 
-A passphrase está no 1Password, vault Private, item **Borg takidesk-home**. O
-`encryption_passcommand` do borgmatic chama `~/.local/bin/borg-passphrase`, que
-lê o item em tempo de execução usando a sessão em `~/.op_session`.
+A passphrase vem de duas fontes, nesta ordem: o **chaveiro do sistema**, que está
+destrancado desde o login, e o **1Password** (vault Private, item **Borg
+takidesk-home**), que é a cópia durável.
+
+A ordem é o ponto. Antes só existia o 1Password, e isso amarrava um backup
+noturno a um login interativo: na noite de 11/09 a sessão tinha vencido três dias
+antes e o backup não rodou (`You are not currently signed in`). Backup que
+depende de alguém ter digitado uma senha naquele dia não é automático.
+
+O chaveiro não substitui o 1Password, fica na frente dele. Cofre não sobrevive a
+formatação nem viaja entre máquinas, e foi assim que as senhas do hachi se
+perderam. Por isso, quando a passphrase vem do 1Password, ela é semeada no
+chaveiro na mesma hora: a primeira execução depois de um format conserta o resto
+sozinha.
 
 O export da chave repokey está no item **Borg takidesk-home key export**, para o
 caso de o blob dentro do repositório corromper. Ele sozinho não abre nada: só
@@ -116,7 +127,7 @@ As falhas prováveis, e o que a notificação vai dizer:
 
 | Sintoma no aviso | Causa | Conserto |
 |---|---|---|
-| passphrase / `op` | a sessão do 1Password venceu | rodar `ops` |
+| passphrase / `op` | chaveiro vazio E sessão do 1Password vencida | rodar `ops` uma vez; ela semeia o chaveiro |
 | repositório do ZEUS recusado | NAS desligado ou fora da rede | ligar; o mount é automount |
 | Hetzner inacessível | rede ou a box fora | tentar de novo na noite seguinte |
 

@@ -1,24 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Imprime a passphrase do repositório borg, lida do 1Password em tempo de
-# execução. É isto que o `encryption_passcommand` do borgmatic chama.
+# Imprime a passphrase do repositório borg.
 #
-# A senha não fica em arquivo de configuração porque o config do borgmatic vai
-# para o chezmoi, e o chezmoi vai para um repositório. Perder esta senha é
-# perder os dois backups de uma vez: o borg não tem recuperação.
+# Duas fontes, nesta ordem, e a ordem é o ponto:
 #
-# Um shell novo não herda a variável de sessão do 1Password, então ela é lida do
-# arquivo que o `pw-keepalive` mantém vivo. Se o arquivo não existir, o backup
-# falha aqui e falha alto, que é melhor que rodar e gravar um arquivo que
-# ninguém consegue abrir depois.
+#   1. o chaveiro do sistema, destrancado desde o login
+#   2. o 1Password, que é a cópia durável
+#
+# A versão anterior lia só o 1Password, e isso amarrava o backup NOTURNO a um
+# login INTERATIVO. Na noite de 11/09 a sessão tinha vencido três dias antes e o
+# backup simplesmente não rodou: `You are not currently signed in`. Um backup que
+# depende de alguém ter digitado uma senha naquele dia não é automático.
+#
+# O chaveiro não substitui o 1Password, ele fica na frente. Cofre não sobrevive a
+# uma formatação nem viaja entre máquinas, e foi assim que as senhas do hachi se
+# perderam. Por isso, quando a passphrase vem do 1Password, ela é semeada no
+# chaveiro na mesma hora: a primeira execução depois de um format conserta o
+# resto sozinha.
 
 ITEM="${BORG_OP_ITEM:-op://Private/Borg takidesk-home/credential}"
 SESSION_FILE="${OP_SESSION_FILE:-$HOME/.op_session}"
+SERVICE="${BORG_KEYRING_SERVICE:-ezomar-borg}"
+ACCOUNT="${BORG_KEYRING_ACCOUNT:-takidesk-home}"
 
+# --- 1. chaveiro --------------------------------------------------------------
+if command -v secret-tool >/dev/null 2>&1; then
+  if pass="$(secret-tool lookup service "$SERVICE" account "$ACCOUNT" 2>/dev/null)" && [ -n "$pass" ]; then
+    printf '%s' "$pass"
+    exit 0
+  fi
+fi
+
+# --- 2. 1Password -------------------------------------------------------------
 if [ ! -s "$SESSION_FILE" ]; then
-  echo "[borg-passphrase] sem $SESSION_FILE; rode 'ops' para reabrir a sessão do 1Password." >&2
+  echo "[borg-passphrase] sem $SESSION_FILE e nada no chaveiro; rode 'ops'." >&2
   exit 1
 fi
 
-OP_SESSION_exatodigital="$(cat "$SESSION_FILE")" op read "$ITEM"
+pass="$(OP_SESSION_exatodigital="$(cat "$SESSION_FILE")" op read "$ITEM")" || {
+  echo "[borg-passphrase] o 1Password recusou; a sessão pode ter vencido. Rode 'ops'." >&2
+  exit 1
+}
+[ -n "$pass" ] || { echo "[borg-passphrase] o 1Password devolveu vazio." >&2; exit 1; }
+
+# Semear o chaveiro para a próxima execução não precisar de sessão nenhuma.
+# Falha aqui não é fatal: já temos a senha, e o backup é o que importa.
+if command -v secret-tool >/dev/null 2>&1; then
+  printf '%s' "$pass" | secret-tool store --label="Borg $ACCOUNT" \
+    service "$SERVICE" account "$ACCOUNT" >/dev/null 2>&1 || true
+fi
+
+printf '%s' "$pass"
