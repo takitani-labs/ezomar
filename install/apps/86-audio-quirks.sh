@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Corrige DACs USB cujo descritor de volume o PipeWire não consegue usar.
+# Corrige o receptor USB do fone sem fio Fuxi-H3, cujo descritor de volume o
+# PipeWire não consegue usar.
+#
+# O Fuxi-H3 NÃO é um DAC com saída de fone: é o receptor 2.4G do headset, e por
+# isso também traz microfone. Tratar como DAC com cabo levou a uma tarde
+# procurando plugue frouxo num aparelho que não tem plugue nenhum.
 #
 # Medido no takidesk: o Fuxi-H3 declara 100 passos de volume e uma faixa total
 # de 0,39 dB. O PipeWire raciocina em decibéis, então ao pedir -6 dB para 50%
@@ -51,13 +56,24 @@ if [ -z "$CARD" ]; then
   exit 0
 fi
 
-LEVEL="$(amixer -c "$CARD" sget PCM 2>/dev/null | grep -oE '\[[0-9]+%\]' | head -1 | tr -d '[]%' || echo 0)"
-if [ "${LEVEL:-0}" -lt 70 ]; then
-  amixer -c "$CARD" sset PCM 80% >/dev/null 2>&1 || true
-  say "PCM do Fuxi estava em ${LEVEL}%; ajustado para 80%."
-else
-  say "PCM do Fuxi em ${LEVEL}%, já suficiente."
-fi
+# O receptor tem DOIS controles de reprodução, e os dois precisam estar altos:
+#
+#   PCM,0  estéreo, o volume que se vê
+#   PCM,1  mono, que o chip usa como mestre
+#
+# Só o primeiro era ajustado. O segundo nasce em 0%, e com ele ali o fone só
+# soava com tudo no máximo e só de um lado: o mestre mono zerado deixa passar
+# um canal e quase nada de sinal. Como ele não aparece no painel de volume,
+# nada na tela indica que existe.
+for ctl in "PCM,0" "PCM,1"; do
+  LEVEL="$(amixer -c "$CARD" sget "$ctl" 2>/dev/null | grep -oE '\[[0-9]+%\]' | head -1 | tr -d '[]%' || echo 0)"
+  if [ "${LEVEL:-0}" -lt 70 ]; then
+    amixer -c "$CARD" sset "$ctl" 100% >/dev/null 2>&1 || true
+    say "$ctl do Fuxi estava em ${LEVEL:-0}%; ajustado para 100%."
+  else
+    say "$ctl do Fuxi em ${LEVEL}%, já suficiente."
+  fi
+done
 
 # Sem isto o ajuste volta a zero no próximo boot.
 if command -v alsactl >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
