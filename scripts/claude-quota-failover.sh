@@ -4,15 +4,25 @@ set -uo pipefail
 # Quando uma sessão bate no limite, continua a MESMA conversa na próxima conta.
 #
 # Chamado pelo hook `StopFailure` do Claude Code, com o matcher `rate_limit`.
-# Esse evento existe para isto: dispara quando o turno morre por erro de API, e
-# `rate_limit` é um dos motivos que ele sabe distinguir. Não é preciso caçar
-# texto de erro dentro do JSONL da conversa, que mudaria de forma a cada versão.
+# Esse evento existe para isto: dispara quando o turno morre por erro de API e
+# sabe distinguir o motivo, então não é preciso caçar texto de erro no JSONL.
 #
 # Uma sessão em execução NÃO troca de conta: o `CLAUDE_CONFIG_DIR` é lido quando
 # o processo nasce. O que existe é reexecutar a mesma conversa sob outro perfil,
 # e isso funciona porque todos os perfis apontam `projects` para o mesmo
-# `~/.claude/projects`. É o que o Ctrl+B A já faz na mão; aqui só o gatilho é
-# automático, e o trabalho pesado continua sendo do herdr-switch-agent-profile.
+# `~/.claude/projects`. O trabalho pesado é do herdr-switch-agent-profile, o mesmo
+# do Ctrl+B A.
+#
+# Dois modos, e a separação entre eles é o que faz isto funcionar:
+#
+#   hook     decide se vale trocar e para qual conta, dispara o worker e SAI.
+#   worker   processo à parte: espera o pane ociosar e faz a troca.
+#
+# A primeira versão fazia tudo dentro do hook e travava. O hook roda DENTRO do
+# Claude; o switcher manda o Claude sair e espera ele sair; o Claude não sai
+# enquanto o hook dele ainda está rodando. Cada um esperando o outro, até o
+# switcher desistir com "o Claude não encerrou em 15s". O teste manual sempre
+# funcionou justamente porque o switcher foi disparado fora da árvore do Claude.
 #
 # Desligar: EZOMAR_QUOTA_FAILOVER=off no ~/.config/ezomar/config.sh
 
@@ -24,103 +34,117 @@ BEST="${CLAUDE_BEST_BIN:-$HOME/work/repos/takitani-labs/ezomar/scripts/claude-be
 SWITCH="${HERDR_SWITCH_BIN:-$HOME/.local/bin/herdr-switch-agent-profile}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ezomar"
 LOG="$STATE/quota-failover.log"
-# O StopFailure dispara a CADA turno que morre por cota. Sem trava, uma sessão
-# esgotada tenta migrar de novo a cada tentativa sua, e o que a pessoa vê é uma
-# pilha de notificações iguais. Uma tentativa por sessão a cada COOLDOWN.
+# Depois de uma falha, a conta espera este tempo antes de tentar de novo. É por
+# conta e não por sessão: quem esgota é a conta, e ela fica esgotada por horas.
 COOLDOWN_MIN="${EZOMAR_QUOTA_FAILOVER_COOLDOWN_MIN:-60}"
 
-note() {
-  mkdir -p "$(dirname "$LOG")"
-  printf '%s  %s\n' "$(date -Is)" "$*" >>"$LOG"
+mkdir -p "$STATE"
+
+note() { printf '%s  %s\n' "$(date -Is)" "$*" >>"$LOG"; }
+
+notify() {
+  command -v notify-send >/dev/null 2>&1 || return 0
+  notify-send "$@" 2>/dev/null || true
 }
 
-# Hook sempre sai 0. Um failover que não deu certo não pode virar erro em cima
-# do erro de cota que a pessoa já está vendo.
-give_up() { note "$*"; exit 0; }
+key() { printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'; }
 
-[ "${EZOMAR_QUOTA_FAILOVER:-on}" = off ] && give_up "desligado por configuração"
+# =============================================================================
+# worker
+# =============================================================================
+if [ "${1:-}" = "--worker" ]; then
+  current="$2"
+  target="$3"
+  session_id="$4"
+  pane="$5"
+  account="$(key "$current")"
+  stamp="$STATE/failover-conta-$account.stamp"
 
-# O payload do hook chega no stdin; só o session_id interessa, e mesmo ele é
-# opcional porque o switcher pergunta ao herdr qual sessão o pane está rodando.
+  # Uma troca por conta de cada vez. O StopFailure dispara várias vezes em
+  # sequência para o mesmo turno (quatro em três segundos, no log de 15/09), e
+  # sem isto cada disparo abria seu próprio switcher, todos mandando /exit no
+  # mesmo pane.
+  exec 9>"$STATE/failover-conta-$account.lock"
+  flock -n 9 || exit 0
+
+  # Espera o turno terminar de fato. O campo é `agent_status`, o mesmo que o
+  # switcher consulta: ler outro nome não dá erro, dá uma espera que nunca espera.
+  status=""
+  for _ in $(seq 1 30); do
+    status="$(herdr pane get "$pane" 2>/dev/null | python3 -c 'import json,sys
+try: print((json.load(sys.stdin)["result"]["pane"] or {}).get("agent_status") or "")
+except Exception: print("")' 2>/dev/null)"
+    [ "$status" != "working" ] && break
+    sleep 1
+  done
+
+  if [ "$status" = "working" ]; then
+    touch "$stamp"
+    notify -u critical -a "Claude" "Não consegui trocar de conta" \
+      "$current esgotou, mas o pane não ficou ocioso. Ctrl+B A para trocar na mão."
+    note "pane seguiu em 'working' por 30s; sessão $session_id ficou em $current"
+    exit 0
+  fi
+
+  note "migrando a sessão $session_id de $current para $target"
+  if HERDR_PANE_ID="$pane" HERDR_SWITCH_PROFILE="$target" "$SWITCH" >>"$LOG" 2>&1; then
+    rm -f "$stamp"
+    notify -a "Claude" "Conta trocada" "$current esgotou. Seguindo em $target."
+    note "sessão $session_id agora em $target"
+  else
+    touch "$stamp"
+    notify -u critical -a "Claude" "Não consegui trocar de conta" \
+      "$current esgotou. Troque na mão com Ctrl+B A."
+    note "o switcher falhou ao migrar $session_id para $target"
+  fi
+  exit 0
+fi
+
+# =============================================================================
+# hook
+# =============================================================================
+# Daqui para baixo tudo precisa ser rápido e sair 0: é o Claude esperando.
+
+[ "${EZOMAR_QUOTA_FAILOVER:-on}" = off ] && exit 0
+
 payload="$(timeout 2 cat 2>/dev/null || true)"
 session_id="$(printf '%s' "$payload" | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("session_id") or "")
 except Exception: print("")' 2>/dev/null)"
 
-# Fora de um pane do herdr não há o que reexecutar: o switcher trabalha mandando
-# o pane sair e subir de novo, e sem pane isso não existe.
-[ -n "${HERDR_PANE_ID:-}" ] || give_up "fora de um pane do herdr; nada a trocar"
-[ -x "$SWITCH" ] || give_up "herdr-switch-agent-profile não encontrado em $SWITCH"
+# Fora de um pane do herdr não há o que reexecutar.
+[ -n "${HERDR_PANE_ID:-}" ] || { note "fora de um pane do herdr; nada a trocar"; exit 0; }
+[ -x "$SWITCH" ] || { note "switcher ausente em $SWITCH"; exit 0; }
 
 current="$(basename "${CLAUDE_CONFIG_DIR:-}" 2>/dev/null)"
-[ -n "$current" ] && [ "$current" != "." ] || give_up "não descobri o perfil atual (CLAUDE_CONFIG_DIR vazio)"
+[ -n "$current" ] && [ "$current" != "." ] || { note "CLAUDE_CONFIG_DIR vazio"; exit 0; }
 
-# A trava é por CONTA, não por sessão, e só existe depois de uma falha.
-#
-# A primeira versão era por sessão, e a conta continuava esgotada por horas: cada
-# sessão que encostava nela tentava de novo, e o resultado foi quatro avisos
-# iguais numa noite. Quem está esgotado é a conta, então é ela que tem de
-# esperar. Em caso de sucesso não se marca nada: a sessão migrou, não há o que
-# segurar.
-stamp="$STATE/failover-conta-$(printf '%s' "$current" | tr -c 'A-Za-z0-9_-' '_').stamp"
+account="$(key "$current")"
+stamp="$STATE/failover-conta-$account.stamp"
 if [ -f "$stamp" ]; then
   age_min=$(( ( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ) / 60 ))
   [ "$age_min" -lt "$COOLDOWN_MIN" ] && exit 0
 fi
 
-# A conta que acabou de recusar sai da disputa, senão o failover devolve ela
-# mesma e a troca não sai do lugar.
+# Já tem um worker cuidando desta conta: não empilhar outro.
+if ! flock -n "$STATE/failover-conta-$account.lock" true 2>/dev/null; then
+  exit 0
+fi
+
 target="$(bash "$BEST" --exclude "$current" 2>/dev/null)"
-[ -n "$target" ] || {
-  command -v notify-send >/dev/null 2>&1 && notify-send -u critical -a "Claude" \
-    "Cota esgotada" "Nenhuma outra conta tem folga agora. A sessão ficou onde está." || true
-  give_up "sem conta alternativa com folga; sessão $session_id fica em $current"
-}
-
-note "cota de $current esgotada; migrando a sessão $session_id para $target"
-
-# O switcher recusa trocar enquanto o herdr reporta o pane como "working", e a
-# recusa é certa para a troca manual: ninguém quer o Ctrl+B A derrubando uma
-# resposta em andamento. Só que o StopFailure dispara EXATAMENTE no fim do turno
-# que morreu, e o herdr ainda não atualizou o estado. O turno já acabou; o que
-# falta é o herdr perceber.
-#
-# Esperar é melhor que forçar: mantém a proteção de pé para o caminho manual, e
-# se por algum motivo o estado nunca limpar, desiste em vez de interromper algo
-# de verdade.
-# O campo é `agent_status`, que é o mesmo que o switcher consulta. Eu lia
-# `state`, que não existe no JSON: vinha vazio, a espera saía na primeira volta,
-# e o switcher recusava um segundo depois. Ler o campo errado aqui não dá erro,
-# dá uma espera que nunca espera.
-for _ in $(seq 1 20); do
-  state="$(herdr pane get "$HERDR_PANE_ID" 2>/dev/null \
-    | python3 -c 'import json,sys
-try: print((json.load(sys.stdin)["result"]["pane"] or {}).get("agent_status") or "")
-except Exception: print("")' 2>/dev/null)"
-  [ "$state" != "working" ] && break
-  sleep 1
-done
-if [ "$state" = working ]; then
-  command -v notify-send >/dev/null 2>&1 && notify-send -u critical -a "Claude" \
-    "Não consegui trocar de conta" "$current esgotou, mas o pane não ficou ocioso. Ctrl+B A para trocar na mão." || true
-  mkdir -p "$STATE" && touch "$stamp"
-  give_up "pane seguiu em 'working' por 20s; não migrei a sessão $session_id"
+if [ -z "$target" ]; then
+  touch "$stamp"
+  notify -u critical -a "Claude" "Cota esgotada" \
+    "Nenhuma outra conta tem folga agora. A sessão ficou em $current."
+  note "sem conta alternativa com folga; $session_id fica em $current"
+  exit 0
 fi
 
-# O switcher já sabe fazer tudo; a única coisa que ele pede de fora é qual
-# perfil, e ele aceita isso por variável em vez de menu.
-#
-# O aviso vem DEPOIS, e só quando deu certo. Anunciar a troca antes de tentar
-# produziu uma tela cheia de "trocando de conta" para trocas que nunca
-# aconteceram, o que é pior que silêncio: diz que resolveu e não resolveu.
-if ! HERDR_SWITCH_PROFILE="$target" "$SWITCH" >>"$LOG" 2>&1; then
-  command -v notify-send >/dev/null 2>&1 && notify-send -u critical -a "Claude" \
-    "Não consegui trocar de conta" "$current esgotou. Troque na mão com Ctrl+B A." || true
-  mkdir -p "$STATE" && touch "$stamp"
-  give_up "o switcher falhou ao migrar para $target"
-fi
+note "cota de $current esgotada; disparando worker para $target"
 
-command -v notify-send >/dev/null 2>&1 && notify-send -a "Claude" \
-  "Conta trocada" "$current esgotou. Seguindo em $target." || true
-note "sessão $session_id agora em $target"
+# setsid + fundo: o worker sai da árvore do Claude. É isso que desfaz o impasse,
+# porque o Claude pode encerrar o turno e sair enquanto o worker espera.
+setsid bash "$0" --worker "$current" "$target" "$session_id" "$HERDR_PANE_ID" \
+  </dev/null >/dev/null 2>&1 &
+
 exit 0
