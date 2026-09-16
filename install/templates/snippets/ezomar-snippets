@@ -84,8 +84,11 @@ kept = [
 
 block = ['  "snippets": {"icon":"󰅍","label":"Snippets","aliases":["snippet","snip"]},']
 for key, value, desc in rows:
-    label = key
-    subtitle = desc or (value[:48] + ("…" if len(value) > 48 else ""))
+    # O rótulo mostra o VALOR, não a chave. Num menu você não digita a
+    # abreviação, você escolhe: o que precisa estar visível é o que vai ser
+    # colado. A chave vira só a letra que filtra, entre parênteses na frente.
+    label = "(%s) %s" % (key, value if len(value) <= 44 else value[:44] + "…")
+    subtitle = desc
     entry = {
         "icon": "󰅌",
         "label": label,
