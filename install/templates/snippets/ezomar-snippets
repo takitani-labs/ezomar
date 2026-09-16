@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Expansão de texto sem nada lendo o seu teclado.
+#
+#   ezomar-snippets sync         regenera as entradas no menu do Omarchy
+#   ezomar-snippets type <chave> digita o valor na janela em foco
+#   ezomar-snippets list         mostra o que existe
+#
+# Expansor inline (espanso, AutoKey) é, por construção, um keylogger: para saber
+# que você digitou `glm` ele precisa ler toda tecla, em toda janela, inclusive
+# senha. Numa máquina com ~/.ssh, .pgpass e sessão do 1Password isso é caro. O
+# AUR do espanso ainda concede `cap_dac_override` ao binário, que ignora
+# permissão de arquivo.
+#
+# Aqui a troca é consciente: em vez de vigiar o teclado, um atalho abre o menu
+# do Omarchy com a lista e o `wtype` digita o escolhido. Nada observa nada, e o
+# custo é chamar o menu em vez de expandir sozinho.
+#
+# Os snippets ficam num TSV para adicionar um ser editar uma linha:
+#
+#   chave <TAB> valor <TAB> descrição (opcional)
+
+SNIPPETS="${EZOMAR_SNIPPETS_FILE:-$HOME/.config/ezomar/snippets.tsv}"
+MENU="${OMARCHY_MENU_EXT:-$HOME/.config/omarchy/extensions/omarchy-menu.jsonc}"
+
+say() { echo "[ezomar][snippets] $*"; }
+
+read_snippets() {
+  [ -f "$SNIPPETS" ] || return 1
+  # Comentário e linha vazia fora; o valor pode conter espaço e acento.
+  grep -vE '^\s*#|^\s*$' "$SNIPPETS"
+}
+
+case "${1:-list}" in
+  list)
+    read_snippets 2>/dev/null | awk -F'\t' '{printf "  %-10s %s\n", $1, $2}' \
+      || say "sem $SNIPPETS"
+    ;;
+
+  type)
+    key="${2:-}"
+    [ -n "$key" ] || { say "uso: ezomar-snippets type <chave>" >&2; exit 2; }
+    value="$(read_snippets 2>/dev/null | awk -F'\t' -v k="$key" '$1==k {print $2; exit}')"
+    [ -n "$value" ] || { say "chave desconhecida: $key" >&2; exit 1; }
+    command -v wtype >/dev/null 2>&1 || { say "wtype não instalado" >&2; exit 1; }
+    # O menu precisa fechar e o foco voltar para o campo antes de digitar; sem a
+    # pausa o texto vai parar no menu que está saindo da tela.
+    sleep 0.25
+    wtype -- "$value"
+    ;;
+
+  sync)
+    [ -f "$SNIPPETS" ] || { say "sem $SNIPPETS; nada a sincronizar."; exit 0; }
+    mkdir -p "$(dirname "$MENU")"
+    [ -f "$MENU" ] || printf '{\n}\n' > "$MENU"
+
+    SNIPPETS="$SNIPPETS" MENU="$MENU" python3 <<'PYEOF'
+import json
+import os
+import re
+
+snippets_path = os.environ["SNIPPETS"]
+menu_path = os.environ["MENU"]
+raw = open(menu_path, encoding="utf-8").read()
+
+rows = []
+for line in open(snippets_path, encoding="utf-8"):
+    line = line.rstrip("\n")
+    if not line.strip() or line.lstrip().startswith("#"):
+        continue
+    parts = line.split("\t")
+    if len(parts) < 2 or not parts[0].strip():
+        continue
+    rows.append((parts[0].strip(), parts[1], parts[2].strip() if len(parts) > 2 else ""))
+
+# Só as linhas `snippets*` são nossas. Tudo que o Andre escreveu à mão no
+# arquivo fica onde está: reescrever o arquivo inteiro apagaria o que ele
+# adicionou, e um menu que come configuração do dono é pior que não ter menu.
+kept = [
+    ln for ln in raw.splitlines()
+    if not re.match(r'^\s*"snippets(\.|")', ln)
+]
+
+block = ['  "snippets": {"icon":"󰅍","label":"Snippets","aliases":["snippet","snip"]},']
+for key, value, desc in rows:
+    label = key
+    subtitle = desc or (value[:48] + ("…" if len(value) > 48 else ""))
+    entry = {
+        "icon": "󰅌",
+        "label": label,
+        "description": subtitle,
+        "action": "ezomar-snippets type %s" % json.dumps(key)[1:-1],
+    }
+    fields = ",".join('"%s":%s' % (k, json.dumps(v, ensure_ascii=False)) for k, v in entry.items())
+    block.append('  "snippets.%s": {%s},' % (key, fields))
+
+# Entra logo antes da chave de fechamento, que é onde entradas válidas moram.
+out, inserted = [], False
+for ln in reversed(kept):
+    if not inserted and ln.strip() == "}":
+        out.append(ln)
+        out.extend(reversed(block))
+        inserted = True
+    else:
+        out.append(ln)
+out = list(reversed(out))
+if not inserted:
+    out = ["{"] + block + ["}"]
+
+open(menu_path, "w", encoding="utf-8").write("\n".join(out) + "\n")
+print("  %d snippet(s) no menu" % len(rows))
+PYEOF
+    say "Menu atualizado. Abra com: omarchy menu summon snippets"
+    ;;
+
+  -h | --help)
+    sed -n '3,7p' "$0" | sed 's/^# \?//'
+    ;;
+  *)
+    say "uso: ezomar-snippets [list|sync|type <chave>]" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Liga o microfone antes de gravar, e só então chama o voxtype.
+#
+#   voxtype-dictate start    (F9 apertado)
+#   voxtype-dictate stop     (F9 solto)
+#
+# Pedir áudio de um microfone mudo não dá erro: dá silêncio. E o Whisper, diante
+# de silêncio, alucina — ele escreve "you". Foi o que aconteceu aqui: o ditado
+# transcrevia "you" para tudo, e parecia problema de reconhecimento quando era
+# microfone cortado.
+#
+# O fifine tem botão de mudo no próprio aparelho, e ele corta nas DUAS camadas
+# (PipeWire e ALSA) de uma vez. Já aconteceu quatro vezes. Em vez de lembrar de
+# conferir, o atalho confere sozinho.
+#
+# Caminho rápido de propósito: quando já está ligado não faz nada, para não
+# atrasar o começo da gravação e cortar a primeira palavra.
+
+MIC="${EZOMAR_MIC_BIN:-$HOME/.local/bin/mic}"
+
+case "${1:-start}" in
+  start)
+    if [ -x "$MIC" ]; then
+      # `mic status` não mexe em nada; só ligamos se estiver realmente mudo.
+      if "$MIC" status 2>/dev/null | grep -q "não está passando som"; then
+        "$MIC" on >/dev/null 2>&1
+      fi
+    fi
+    exec voxtype record start
+    ;;
+  stop)
+    exec voxtype record stop
+    ;;
+  *)
+    echo "uso: $(basename "$0") [start|stop]" >&2
+    exit 2
+    ;;
+esac
