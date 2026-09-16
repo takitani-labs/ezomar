@@ -43,6 +43,10 @@ fi
 
 SNIPPETS="${EZOMAR_SNIPPETS_FILE:-$HOME/.config/ezomar/snippets.tsv}"
 MENU="${OMARCHY_MENU_EXT:-$HOME/.config/omarchy/extensions/omarchy-menu.jsonc}"
+# O fcitx5 é o único que consegue abrir NO CURSOR DE TEXTO: a posição do cursor
+# só é entregue ao método de entrada, via `set_cursor_rectangle` do protocolo
+# zwp_text_input_v3. Fuzzel e afins não recebem isso e nunca vão receber.
+QUICKPHRASE="${FCITX5_QUICKPHRASE_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/fcitx5/data/quickphrase.d/ezomar.mb}"
 SUBMAP="${HYPR_SNIPPETS_SUBMAP:-$HOME/.config/hypr/snippets-submap.lua}"
 
 say() { echo "[ezomar][snippets] $*"; }
@@ -174,6 +178,16 @@ else:
     mkdir -p "$(dirname "$MENU")"
     mkdir -p "$(dirname "$SUBMAP")"
     [ -f "$MENU" ] || printf '{\n}\n' > "$MENU"
+
+    # Formato do quickphrase: uma linha por frase, a primeira palavra é o atalho
+    # e o resto da linha é o texto. Bate quase um para um com o nosso TSV.
+    mkdir -p "$(dirname "$QUICKPHRASE")"
+    {
+      echo "# Gerado por ezomar-snippets sync — não edite à mão."
+      echo "# Fonte: $SNIPPETS"
+      read_snippets | awk -F'\t' 'NF>=2 {print $1" "$2}'
+    } > "$QUICKPHRASE.tmp" && mv -f "$QUICKPHRASE.tmp" "$QUICKPHRASE"
+    say "quickphrase: $(grep -cv '^#' "$QUICKPHRASE") frase(s) em $QUICKPHRASE"
 
     SNIPPETS="$SNIPPETS" MENU="$MENU" SUBMAP="$SUBMAP" python3 <<'PYEOF'
 import json
