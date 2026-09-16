@@ -5,6 +5,7 @@ set -uo pipefail
 #
 #   ezomar-snippets sync         regenera as entradas no menu do Omarchy
 #   ezomar-snippets type <chave> digita o valor na janela em foco
+#   ezomar-snippets pick         escolhe e digita um valor com o fuzzel
 #   ezomar-snippets list         mostra o que existe
 #
 # Expansor inline (espanso, AutoKey) é, por construção, um keylogger: para saber
@@ -13,16 +14,36 @@ set -uo pipefail
 # AUR do espanso ainda concede `cap_dac_override` ao binário, que ignora
 # permissão de arquivo.
 #
-# Aqui a troca é consciente: em vez de vigiar o teclado, um atalho abre o menu
-# do Omarchy com a lista e o `wtype` digita o escolhido. Nada observa nada, e o
-# custo é chamar o menu em vez de expandir sozinho.
+# Aqui a troca é consciente: em vez de vigiar o teclado, um atalho arma somente
+# a próxima tecla; o menu e o seletor continuam disponíveis como alternativas.
+# O `wtype` digita o escolhido sem nenhum processo observando as outras teclas.
 #
 # Os snippets ficam num TSV para adicionar um ser editar uma linha:
 #
 #   chave <TAB> valor <TAB> descrição (opcional)
 
+# O herdr sobe como serviço de usuário e pode ganhar a corrida contra a sessão
+# gráfica, e aí todo pane que ele abre nasce sem WAYLAND_DISPLAY. Um fuzzel
+# chamado dali sai com status 2 sem explicar nada. Quem sabe o valor certo é o
+# systemd, e o nome do socket muda a cada boot, então não dá para fixar.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && command -v systemctl >/dev/null 2>&1; then
+  _wl="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^WAYLAND_DISPLAY=//p')"
+  [ -n "$_wl" ] && export WAYLAND_DISPLAY="$_wl"
+  unset _wl
+fi
+
+# O `hyprctl` precisa da assinatura da instância, e ela também falta num pane
+# que nasceu antes da sessão gráfica. Sem ela o comando responde "could not
+# read the mouse pointer position", que aponta para o lugar errado do problema.
+if [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
+  _sig="$(ls -t "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr" 2>/dev/null | head -1)"
+  [ -n "$_sig" ] && export HYPRLAND_INSTANCE_SIGNATURE="$_sig"
+  unset _sig
+fi
+
 SNIPPETS="${EZOMAR_SNIPPETS_FILE:-$HOME/.config/ezomar/snippets.tsv}"
 MENU="${OMARCHY_MENU_EXT:-$HOME/.config/omarchy/extensions/omarchy-menu.jsonc}"
+SUBMAP="${HYPR_SNIPPETS_SUBMAP:-$HOME/.config/hypr/snippets-submap.lua}"
 
 say() { echo "[ezomar][snippets] $*"; }
 
@@ -50,19 +71,123 @@ case "${1:-list}" in
     wtype -- "$value"
     ;;
 
+  pick)
+    command -v fuzzel >/dev/null 2>&1 \
+      || { say "fuzzel is not installed; install it to use the picker." >&2; exit 1; }
+    command -v hyprctl >/dev/null 2>&1 \
+      || { say "hyprctl is not available; cannot locate the mouse pointer." >&2; exit 1; }
+    [ -f "$SNIPPETS" ] \
+      || { say "no snippets file at $SNIPPETS" >&2; exit 1; }
+
+    cursor="$(hyprctl cursorpos 2>/dev/null || true)"
+    cursor="${cursor//[[:space:]]/}"
+    mouse_x="${cursor%%,*}"
+    mouse_y="${cursor#*,}"
+    if ! [[ "$mouse_x" =~ ^-?[0-9]+$ && "$mouse_y" =~ ^-?[0-9]+$ ]]; then
+      # Sem a posição do mouse a janela abre no centro. Recusar de abrir por
+      # causa de uma coordenada seria trocar a função pela decoração.
+      want_center=1
+    fi
+
+    # O fuzzel posiciona margens dentro de uma saída, mas o Hyprland informa a
+    # posição global. Converter para coordenadas locais mantém o seletor junto
+    # do mouse também quando há um monitor à esquerda ou acima do principal.
+    # `pick center` abre no meio da tela; sem argumento, junto ao mouse. O meio
+    # serve quando a janela É a dica: os olhos já estão no centro e a lista
+    # inteira cabe. Junto ao mouse serve quando você já sabe o que quer.
+    want_center=""
+    [ "${2:-}" = center ] && want_center=1
+    placement=""
+    monitors=""
+    if [ -z "$want_center" ] && monitors="$(hyprctl -j monitors 2>/dev/null)"; then
+      placement="$(printf '%s\n' "$monitors" | python3 -c '
+import json
+import sys
+
+x = int(sys.argv[1])
+y = int(sys.argv[2])
+try:
+    monitors = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError):
+    raise SystemExit(1)
+
+for monitor in monitors:
+    try:
+        scale = float(monitor.get("scale") or 1)
+        left = int(monitor["x"])
+        top = int(monitor["y"])
+        width = int(float(monitor["width"]) / scale)
+        height = int(float(monitor["height"]) / scale)
+    except (AttributeError, KeyError, TypeError, ValueError, ZeroDivisionError):
+        continue
+    if left <= x < left + width and top <= y < top + height:
+        print(monitor.get("name", "-"), max(0, x - left + 12), max(0, y - top + 12))
+        break
+else:
+    raise SystemExit(1)
+' "$mouse_x" "$mouse_y")" || placement=""
+    fi
+
+    entries="$(read_snippets 2>/dev/null | awk -F'\t' '{printf "(%s) %s\n", $1, $2}')"
+    [ -n "$entries" ] || { say "no snippets configured." >&2; exit 1; }
+
+    fuzzel_args=(
+      --dmenu
+      --background=00000000
+      --prompt="Snippets> "
+      --no-run-if-empty
+    )
+    if [ -n "$placement" ]; then
+      read -r output mouse_x mouse_y <<< "$placement"
+      fuzzel_args+=(
+        --anchor=top-left
+        --x-margin="$mouse_x"
+        --y-margin="$mouse_y"
+      )
+      [ "$output" = "-" ] || fuzzel_args+=(--output="$output")
+    else
+      say "could not read monitor geometry; using fuzzel's default placement." >&2
+    fi
+
+    # Cancelar o seletor é uma saída normal: nada deve ser digitado.
+    choice="$(printf '%s\n' "$entries" | fuzzel "${fuzzel_args[@]}")"
+    picker_status=$?
+    if [ "$picker_status" -ne 0 ]; then
+      if [ "$picker_status" -eq 1 ] && [ -z "$choice" ]; then
+        exit 0
+      fi
+      say "fuzzel failed with status $picker_status." >&2
+      exit "$picker_status"
+    fi
+    [ -n "$choice" ] || exit 0
+    [[ "$choice" =~ ^\((.)\)\  ]] \
+      || { say "the picker returned an unknown entry." >&2; exit 1; }
+    key="${BASH_REMATCH[1]}"
+    expected="$(read_snippets 2>/dev/null | awk -F'\t' -v k="$key" '$1==k {print "(" $1 ") " $2; exit}')"
+    [ "$choice" = "$expected" ] \
+      || { say "the picker returned an unknown entry." >&2; exit 1; }
+    "$0" type "$key"
+    ;;
+
   sync)
     [ -f "$SNIPPETS" ] || { say "sem $SNIPPETS; nada a sincronizar."; exit 0; }
     mkdir -p "$(dirname "$MENU")"
+    mkdir -p "$(dirname "$SUBMAP")"
     [ -f "$MENU" ] || printf '{\n}\n' > "$MENU"
 
-    SNIPPETS="$SNIPPETS" MENU="$MENU" python3 <<'PYEOF'
+    SNIPPETS="$SNIPPETS" MENU="$MENU" SUBMAP="$SUBMAP" python3 <<'PYEOF'
 import json
 import os
 import re
+import shlex
+import stat
+import tempfile
 
 snippets_path = os.environ["SNIPPETS"]
 menu_path = os.environ["MENU"]
-raw = open(menu_path, encoding="utf-8").read()
+submap_path = os.environ["SUBMAP"]
+with open(menu_path, encoding="utf-8", newline="") as menu_file:
+    raw = menu_file.read()
 
 rows = []
 for line in open(snippets_path, encoding="utf-8"):
@@ -72,13 +197,20 @@ for line in open(snippets_path, encoding="utf-8"):
     parts = line.split("\t")
     if len(parts) < 2 or not parts[0].strip():
         continue
-    rows.append((parts[0].strip(), parts[1], parts[2].strip() if len(parts) > 2 else ""))
+    key = parts[0].strip()
+    if not re.fullmatch(r"[A-Za-z]", key):
+        raise SystemExit("invalid snippet key %r: expected one letter" % key)
+    rows.append((key, parts[1], parts[2].strip() if len(parts) > 2 else ""))
+
+keys = [key for key, _, _ in rows]
+if len(keys) != len(set(keys)):
+    raise SystemExit("duplicate snippet keys are not allowed")
 
 # Só as linhas `snippets*` são nossas. Tudo que o Andre escreveu à mão no
 # arquivo fica onde está: reescrever o arquivo inteiro apagaria o que ele
 # adicionou, e um menu que come configuração do dono é pior que não ter menu.
 kept = [
-    ln for ln in raw.splitlines()
+    ln for ln in raw.splitlines(keepends=True)
     if not re.match(r'^\s*"snippets(\.|")', ln)
 ]
 
@@ -99,29 +231,109 @@ for key, value, desc in rows:
     block.append('  "snippets.%s": {%s},' % (key, fields))
 
 # Entra logo antes da chave de fechamento, que é onde entradas válidas moram.
-out, inserted = [], False
-for ln in reversed(kept):
-    if not inserted and ln.strip() == "}":
-        out.append(ln)
-        out.extend(reversed(block))
-        inserted = True
-    else:
-        out.append(ln)
-out = list(reversed(out))
-if not inserted:
-    out = ["{"] + block + ["}"]
+# splitlines(keepends=True) preserva cada byte das linhas que não são nossas.
+newline = "\r\n" if "\r\n" in raw else "\n"
+block_text = newline.join(block) + newline
+for index in range(len(kept) - 1, -1, -1):
+    if kept[index].lstrip().startswith("}"):
+        kept.insert(index, block_text)
+        break
+else:
+    raise SystemExit("menu has no closing brace; refusing to rewrite %s" % menu_path)
 
-open(menu_path, "w", encoding="utf-8").write("\n".join(out) + "\n")
-print("  %d snippet(s) no menu" % len(rows))
+menu_out = "".join(kept)
+
+# A notificação é única ao entrar no submapa. Ela expira rápido e é transitória,
+# portanto não cria uma notificação para cada tecla nem polui o histórico.
+notification = "\n".join("(%s) %s" % (key, value) for key, value, _ in rows)
+# Sem dica visual aqui, de propósito.
+#
+# Tentei duas e as duas ficaram piores que nada. O `notify-send` cai no canto,
+# junto das notificações de sistema, e some no meio delas. O OSD do Omarchy é um
+# widget de UMA linha com ícone, feito para "Volume 50%": ele truncou a lista e
+# ainda estampou um ícone de áudio em cima dela.
+#
+# Quem precisa ver a lista usa o fuzzel, que é feito para lista. O submapa é para
+# quem já sabe a letra, e mostrar dica para quem não vai ler é só poluir a tela.
+notify_command = ""
+
+lua = [
+    "-- Generated by ezomar-snippets sync. Do not edit by hand.",
+    "",
+    "local M = {}",
+    "",
+    'hl.define_submap("snippets", function()',
+]
+for key, _, _ in rows:
+    command = "ezomar-snippets type %s" % shlex.quote(key)
+    lua.extend([
+        '  hl.bind(%s, function()' % json.dumps(key, ensure_ascii=False),
+        '    hl.dispatch(hl.dsp.exec_cmd(%s))' % json.dumps(command, ensure_ascii=False),
+        '    hl.dispatch(hl.dsp.submap("reset"))',
+        "  end)",
+    ])
+lua.extend([
+    '  hl.bind("escape", hl.dsp.submap("reset"))',
+    '  hl.bind("catchall", hl.dsp.submap("reset"))',
+    "end)",
+    "",
+    "function M.enter()",
+    '  hl.dispatch(hl.dsp.exec_cmd(%s))' % json.dumps(notify_command, ensure_ascii=False),
+    '  hl.dispatch(hl.dsp.submap("snippets"))',
+    "end",
+    "",
+    "return M",
+    "",
+])
+submap_out = "\n".join(lua)
+
+def write_if_changed(path, content, mode=None):
+    target_path = os.path.realpath(path) if os.path.islink(path) else path
+
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:
+            mode = 0o644
+
+    try:
+        with open(path, encoding="utf-8", newline="") as source:
+            if source.read() == content:
+                if stat.S_IMODE(os.stat(path).st_mode) != mode:
+                    os.chmod(path, mode)
+                return False
+    except FileNotFoundError:
+        pass
+
+    directory = os.path.dirname(target_path) or "."
+    fd, temporary = tempfile.mkstemp(prefix=".ezomar-snippets-", dir=directory, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as target:
+            target.write(content)
+        if stat.S_IMODE(os.stat(temporary).st_mode) != mode:
+            os.chmod(temporary, mode)
+        os.replace(temporary, target_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return True
+
+write_if_changed(menu_path, menu_out)
+write_if_changed(submap_path, submap_out, 0o600)
+print("  %d snippet(s) in menu" % len(rows))
+print("  %d snippet(s) in submap" % len(rows))
 PYEOF
-    say "Menu atualizado. Abra com: omarchy menu summon snippets"
+    sync_status=$?
+    [ "$sync_status" -eq 0 ] \
+      || { say "sync failed; existing files were left as intact as possible." >&2; exit "$sync_status"; }
+    say "Snippets updated."
     ;;
 
   -h | --help)
     sed -n '3,7p' "$0" | sed 's/^# \?//'
     ;;
   *)
-    say "uso: ezomar-snippets [list|sync|type <chave>]" >&2
+    say "usage: ezomar-snippets [list|pick|sync|type <key>]" >&2
     exit 2
     ;;
 esac
