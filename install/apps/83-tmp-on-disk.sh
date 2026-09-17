@@ -43,7 +43,9 @@ fi
 used="$(df -h /tmp | awk 'NR==2{print $3" de "$2" ("$5")"}')"
 say "/tmp hoje: tmpfs em RAM, $used"
 
-if [ "$(systemctl is-masked tmp.mount 2>/dev/null)" = masked ]; then
+# Não existe `systemctl is-masked`. Quem responde "masked" é o is-enabled, e ele
+# sai com status 1 nesse caso, então o comando não pode ficar sob `set -e` cru.
+if [ "$(systemctl is-enabled tmp.mount 2>/dev/null || true)" = masked ]; then
   say "tmp.mount já está mascarado; falta só reiniciar para valer."
   exit 0
 fi
