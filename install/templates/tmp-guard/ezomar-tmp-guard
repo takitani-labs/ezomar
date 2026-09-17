@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Avisa quando o /tmp encher, e diz QUEM encheu.
+#
+# Já aconteceu duas vezes aqui, e das duas o sintoma apareceu longe da causa:
+# uma vez foi um backup truncado no meio da compressão, outra foi um terminal
+# que parou de devolver saída. Ninguém olha para o /tmp quando o sintoma é esse.
+#
+# O aviso não serve de nada sem a segunda parte. "O /tmp está em 90%" faz a
+# pessoa abrir um terminal e ir procurar; "34 GB em claude-1000, 4 GB em
+# atta-uv-cache" já diz o que apagar. Por isso a notificação leva os maiores.
+#
+# Botões:
+#   EZOMAR_TMP_WARN   porcentagem que dispara o aviso (padrão 85)
+
+WARN="${EZOMAR_TMP_WARN:-85}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ezomar"
+STAMP="$STATE/tmp-guard.stamp"
+# Uma vez por hora: disco cheio não se resolve em cinco minutos, e repetir o
+# aviso a cada verificação só ensina a ignorá-lo.
+COOLDOWN_MIN="${EZOMAR_TMP_WARN_COOLDOWN_MIN:-60}"
+
+usage="$(df -P /tmp 2>/dev/null | awk 'NR==2{print $5+0}')"
+[ -n "$usage" ] || exit 0
+[ "$usage" -lt "$WARN" ] && exit 0
+
+mkdir -p "$STATE"
+if [ -f "$STAMP" ]; then
+  age=$(( ( $(date +%s) - $(stat -c %Y "$STAMP" 2>/dev/null || echo 0) ) / 60 ))
+  [ "$age" -lt "$COOLDOWN_MIN" ] && exit 0
+fi
+touch "$STAMP"
+
+top="$(du -sh /tmp/* 2>/dev/null | sort -rh | head -4 | awk '{printf "%s  %s\n", $1, $2}')"
+free_left="$(df -h /tmp | awk 'NR==2{print $4}')"
+
+if command -v notify-send >/dev/null 2>&1; then
+  notify-send -u critical -a "Sistema" "/tmp em ${usage}%" \
+    "Restam $free_left.
+
+$top" 2>/dev/null || true
+fi
+
+printf '%s  /tmp em %s%%, restam %s\n%s\n' "$(date -Is)" "$usage" "$free_left" "$top" \
+  >> "$STATE/tmp-guard.log"

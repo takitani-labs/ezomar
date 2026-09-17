@@ -1,0 +1,11 @@
+[Unit]
+Description=Verifica o /tmp de dez em dez minutos
+
+[Timer]
+# Dez minutos é curto o bastante para avisar antes de quebrar alguma coisa e
+# longo o bastante para o `du` não virar ele mesmo um problema.
+OnBootSec=5min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
