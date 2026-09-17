@@ -14,7 +14,11 @@ set -uo pipefail
 # Botões:
 #   EZOMAR_TMP_WARN   porcentagem que dispara o aviso (padrão 85)
 
-WARN="${EZOMAR_TMP_WARN:-85}"
+# 85% era tarde demais. Medido aqui: o /tmp saiu de 55% para 65% em poucas
+# horas, com dois diretórios novos de 6 e 8 GB. Num tmpfs de 62 GB, cada 10% são
+# 6 GB, ou seja, um único cache de build consome a margem inteira entre o aviso e
+# o estouro. 75% dá tempo de olhar antes de quebrar alguma coisa.
+WARN="${EZOMAR_TMP_WARN:-75}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ezomar"
 STAMP="$STATE/tmp-guard.stamp"
 # Uma vez por hora: disco cheio não se resolve em cinco minutos, e repetir o
