@@ -12,7 +12,7 @@ set -uo pipefail
 # atta-uv-cache" já diz o que apagar. Por isso a notificação leva os maiores.
 #
 # Botões:
-#   EZOMAR_TMP_WARN   porcentagem que dispara o aviso (padrão 85)
+#   EZOMAR_TMP_WARN   porcentagem que dispara o aviso (padrão 75)
 
 # 85% era tarde demais. Medido aqui: o /tmp saiu de 55% para 65% em poucas
 # horas, com dois diretórios novos de 6 e 8 GB. Num tmpfs de 62 GB, cada 10% são
