@@ -81,3 +81,38 @@ if command -v alsactl >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
 else
   say "Para o volume sobreviver ao reboot, rode: sudo alsactl store"
 fi
+
+# Conferir se a regra PEGOU, não só se o arquivo existe.
+#
+# A primeira versão desta regra casava por node.name. O arquivo era instalado, o
+# wireplumber reiniciava, o módulo dizia "pronto" e nada acontecia: soft-mixer é
+# opção de card, lida na criação do device, então a propriedade ficava visível
+# no node e inerte. O defeito sobreviveu semanas porque o instalador só sabia
+# dizer que tinha copiado um arquivo. Só um teste do efeito pega esse caso.
+if command -v pw-dump >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  effective="$(pw-dump 2>/dev/null | python3 -c '
+import json, sys
+try:
+    objs = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for o in objs:
+    if o.get("type") != "PipeWire:Interface:Device":
+        continue
+    props = (o.get("info") or {}).get("props") or {}
+    if "XiiSound" not in (props.get("device.name") or ""):
+        continue
+    print(str(props.get("api.alsa.soft-mixer", "")).lower())
+' 2>/dev/null | head -1)"
+
+  case "$effective" in
+    true|1)
+      say "Regra confirmada no device: o PipeWire atenua por software." ;;
+    "")
+      say "Não consegui ler o device pelo pw-dump; regra não verificada." ;;
+    *)
+      say "AVISO: a regra está instalada mas o device NÃO recebeu soft-mixer." >&2
+      say "       Abaixar o volume vai zerar o controle estéreo e o fone fica mono." >&2
+      ;;
+  esac
+fi
