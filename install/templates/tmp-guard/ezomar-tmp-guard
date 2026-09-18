@@ -1,32 +1,62 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Avisa quando o /tmp encher, e diz QUEM encheu.
+# Avisa quando o disco encher, e diz QUEM encheu.
 #
 # Já aconteceu duas vezes aqui, e das duas o sintoma apareceu longe da causa:
 # uma vez foi um backup truncado no meio da compressão, outra foi um terminal
-# que parou de devolver saída. Ninguém olha para o /tmp quando o sintoma é esse.
+# que parou de devolver saída. Ninguém olha para espaço em disco quando o
+# sintoma é esse.
 #
-# O aviso não serve de nada sem a segunda parte. "O /tmp está em 90%" faz a
-# pessoa abrir um terminal e ir procurar; "34 GB em claude-1000, 4 GB em
-# atta-uv-cache" já diz o que apagar. Por isso a notificação leva os maiores.
+# ---------------------------------------------------------------------------
+# Por que isto foi reescrito
+#
+# A primeira versão media `df -P /tmp` contra 75%, porque o /tmp era um tmpfs de
+# 62 GB e essa conta fazia sentido. Depois que o tmp.mount foi mascarado o /tmp
+# virou um diretório na raiz, e as duas medidas colapsaram: `df -P /tmp` e
+# `df -P /` passaram a devolver a MESMA linha. Com a raiz em 27% o script saía na
+# primeira comparação em toda execução. Rodou 144 vezes sem nunca escrever log
+# nem stamp: não estava degradado, estava morto.
+#
+# Pior que o alarme perdido era a atribuição errada que ele garantia: o gatilho
+# passou a medir a raiz inteira enquanto o título e a lista de culpados
+# continuavam dizendo /tmp. No dia em que o /home enchesse, ele apontaria para o
+# diretório errado com toda a confiança do mundo.
+#
+# ---------------------------------------------------------------------------
+# Por que NÃO se mede com du
+#
+# A raiz é btrfs e o .NET copia com reflink, então `du` conta cada cópia lógica
+# pelo tamanho cheio enquanto os blocos são compartilhados. Medido aqui:
+#
+#   /tmp                             du 129 GiB   exclusivo   1,37 GiB
+#   /tmp/dd-intelligence-artifacts   du  64 GiB   exclusivo  74,6 MB
+#
+# Um limite baseado em `du` dispararia por causa de dados que não ocupam disco.
+# O número que importa é o espaço realmente livre, que é o que o df relata.
+#
+# Custos medidos, com o timer rodando a cada 10 minutos:
+#
+#   df -P /                11 ms
+#   du -xs /tmp           182 ms
+#   btrfs filesystem du   1,5 s
+#
+# Daí a forma: gatilho barato em toda execução, diagnóstico caro só quando
+# dispara.
 #
 # Botões:
-#   EZOMAR_TMP_WARN   porcentagem que dispara o aviso (padrão 75)
+#   EZOMAR_DISK_WARN   porcentagem que dispara o aviso (padrão 85)
 
-# 85% era tarde demais. Medido aqui: o /tmp saiu de 55% para 65% em poucas
-# horas, com dois diretórios novos de 6 e 8 GB. Num tmpfs de 62 GB, cada 10% são
-# 6 GB, ou seja, um único cache de build consome a margem inteira entre o aviso e
-# o estouro. 75% dá tempo de olhar antes de quebrar alguma coisa.
-WARN="${EZOMAR_TMP_WARN:-75}"
+WARN="${EZOMAR_DISK_WARN:-${EZOMAR_TMP_WARN:-85}}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ezomar"
 STAMP="$STATE/tmp-guard.stamp"
 # Uma vez por hora: disco cheio não se resolve em cinco minutos, e repetir o
 # aviso a cada verificação só ensina a ignorá-lo.
 COOLDOWN_MIN="${EZOMAR_TMP_WARN_COOLDOWN_MIN:-60}"
 
-usage="$(df -P /tmp 2>/dev/null | awk 'NR==2{print $5+0}')"
-[ -n "$usage" ] || exit 0
+# O / é o que importa: é dele que /tmp, /home e /var tiram espaço.
+usage="$(df -P / 2>/dev/null | awk 'NR==2{print $5+0}')"
+[ -n "${usage:-}" ] || exit 0
 [ "$usage" -lt "$WARN" ] && exit 0
 
 mkdir -p "$STATE"
@@ -36,15 +66,33 @@ if [ -f "$STAMP" ]; then
 fi
 touch "$STAMP"
 
-top="$(du -sh /tmp/* 2>/dev/null | sort -rh | head -4 | awk '{printf "%s  %s\n", $1, $2}')"
-free_left="$(df -h /tmp | awk 'NR==2{print $4}')"
+free_h="$(df -h / | awk 'NR==2{print $4}')"
+
+# Só agora vale pagar pela medida cara, e só ela responde "quem ocupa disco de
+# verdade". Em btrfs a coluna que interessa é a exclusiva: espaço que some se
+# aquilo for apagado. Fora de btrfs cai no du, que ali não mente.
+biggest() {
+  local d
+  if btrfs filesystem du -s --raw /tmp >/dev/null 2>&1; then
+    for d in /tmp /home/"$USER"/.cache /var/cache/pacman/pkg /var/lib/docker; do
+      [ -d "$d" ] || continue
+      btrfs filesystem du -s --raw "$d" 2>/dev/null | awk -v p="$d" '
+        NR==2 && $2 ~ /^[0-9]+$/ { printf "%.1f GB  %s\n", $2/1073741824, p }'
+    done | sort -rn | head -4
+  else
+    du -xsh /tmp /home/"$USER"/.cache /var/cache/pacman/pkg 2>/dev/null \
+      | sort -rh | head -4 | awk '{printf "%s  %s\n", $1, $2}'
+  fi
+}
+top="$(biggest)"
 
 if command -v notify-send >/dev/null 2>&1; then
-  notify-send -u critical -a "Sistema" "/tmp em ${usage}%" \
-    "Restam $free_left.
+  notify-send -u critical -a "Sistema" -h "string:x-dunst-stack-tag:ezomar-disk" \
+    "Disco em ${usage}%" \
+    "Restam $free_h.
 
 $top" 2>/dev/null || true
 fi
 
-printf '%s  /tmp em %s%%, restam %s\n%s\n' "$(date -Is)" "$usage" "$free_left" "$top" \
+printf '%s  disco em %s%%, restam %s\n%s\n' "$(date -Is)" "$usage" "$free_h" "$top" \
   >> "$STATE/tmp-guard.log"
