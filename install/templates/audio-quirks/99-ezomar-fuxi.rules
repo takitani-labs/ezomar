@@ -1,0 +1,13 @@
+# Dispara o ajuste de níveis quando o receptor Fuxi-H3 (040b:0897) aparece.
+#
+# A regra do sistema 90-alsa-restore.rules já devolve níveis salvos, mas só
+# serve depois que alguém rodou alsactl store uma vez. Esta aqui não depende de
+# estado salvo nenhum, que é exatamente o caso da máquina recém-formatada.
+#
+# Engancha em controlC*, e não em card*, pelo mesmo motivo que a regra do
+# sistema: quem carrega o mixer é o device de controle, e é ele que o udev
+# marca com a tag systemd.
+#
+# O trabalho vai para uma unit do systemd em vez de RUN+= direto: o udev mata
+# processos demorados, e o mixer pode não responder no instante do evento.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="040b", ATTRS{idProduct}=="0897", TAG+="systemd", ENV{SYSTEMD_WANTS}+="ezomar-fuxi-levels@%k.service"

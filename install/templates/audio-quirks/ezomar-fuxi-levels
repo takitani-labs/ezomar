@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Levanta os controles de reprodução do receptor Fuxi-H3 assim que ele aparece.
+#
+# Existe porque o conserto do volume tem uma precondição que ninguém enxerga:
+# com api.alsa.soft-mixer o PipeWire atenua por software e NUNCA mexe no mixer
+# do aparelho, então o mixer precisa já estar no alto. O receptor liga com o
+# controle mono em 0% e o kernel só relata o que encontrou.
+#
+# Numa máquina em uso isso é invisível, porque o alsactl guardou os níveis e a
+# regra 90-alsa-restore.rules do sistema os devolve a cada plugada. O caso que
+# quebra é a máquina recém-formatada: asound.state nasce vazio, e o módulo do
+# ezomar só ajustava o ALSA se o fone estivesse plugado no instante da
+# instalação. Plugar depois dava fone mudo, com toda a configuração correta.
+#
+# Recebe o nome do device pelo udev. Aceita controlCN (que é o que a regra
+# manda) e cardN, porque é o que se digita ao testar na mão.
+
+dev="${1:-}"
+[ -n "$dev" ] || exit 0
+num="${dev##*[!0-9]}"
+case "$num" in ''|*[!0-9]*) exit 0 ;; esac
+
+command -v amixer >/dev/null 2>&1 || exit 0
+
+# Confere que é mesmo o Fuxi: números de card mudam de boot para boot, e mandar
+# 100% no controle de outra placa seria um susto e tanto para quem estiver de
+# fone na orelha.
+if ! amixer -c "$num" info 2>/dev/null | grep -qi 'fuxi'; then
+  exit 0
+fi
+
+for ctl in "PCM,0" "PCM,1"; do
+  amixer -c "$num" sset "$ctl" 100% >/dev/null 2>&1 || true
+done
+
+logger -t ezomar-fuxi-levels "PCM,0 e PCM,1 do card $num (via $dev) ajustados para 100%" 2>/dev/null || true

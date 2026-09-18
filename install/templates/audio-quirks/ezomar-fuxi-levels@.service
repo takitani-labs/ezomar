@@ -1,0 +1,11 @@
+[Unit]
+Description=Raise Fuxi-H3 ALSA playback controls to full (%i)
+# Não usar BindsTo numa device unit adivinhada: o nome real de um card USB é o
+# caminho PCI inteiro, e um nome errado faz a unit falhar em silêncio. O gatilho
+# já vem do udev, que é quem sabe quando o aparelho existe.
+After=sound.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ezomar-fuxi-levels %i
+RemainAfterExit=no

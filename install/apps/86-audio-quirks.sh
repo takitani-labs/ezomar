@@ -82,6 +82,65 @@ else
   say "Para o volume sobreviver ao reboot, rode: sudo alsactl store"
 fi
 
+# Levantar o mixer sempre que o aparelho aparecer, e não só agora.
+#
+# O ajuste acima só acontece se o fone estiver plugado no instante da
+# instalação. Numa máquina recém-formatada isso é uma aposta: quem roda o
+# ezomar com o headset na gaveta fica com toda a configuração correta e o fone
+# mudo quando plugar, porque o asound.state nasce vazio e o soft-mixer impede o
+# PipeWire de levantar o controle. A regra udev tira a ordem das coisas da
+# equação.
+#
+# Mora em /etc e /usr/local, fora do $HOME, então precisa de root e não volta
+# sozinho num restore de backup: é justamente por isso que fica versionado aqui.
+install_system_quirk() {
+  local src="$1" dst="$2" mode="$3"
+  if cmp -s "$src" "$dst" 2>/dev/null; then
+    return 1
+  fi
+  sudo install -m "$mode" "$src" "$dst"
+  return 0
+}
+
+SYS_FILES_OK=1
+for pair in \
+  "ezomar-fuxi-levels|/usr/local/bin/ezomar-fuxi-levels|0755" \
+  "ezomar-fuxi-levels@.service|/etc/systemd/system/ezomar-fuxi-levels@.service|0644" \
+  "99-ezomar-fuxi.rules|/etc/udev/rules.d/99-ezomar-fuxi.rules|0644"
+do
+  IFS='|' read -r f d m <<<"$pair"
+  [ -f "$TPL/$f" ] || continue
+  if ! cmp -s "$TPL/$f" "$d" 2>/dev/null; then
+    SYS_FILES_OK=0
+  fi
+done
+
+if [ "$SYS_FILES_OK" = 1 ]; then
+  say "Gatilho udev já instalado."
+elif sudo -n true 2>/dev/null; then
+  changed=0
+  for pair in \
+    "ezomar-fuxi-levels|/usr/local/bin/ezomar-fuxi-levels|0755" \
+    "ezomar-fuxi-levels@.service|/etc/systemd/system/ezomar-fuxi-levels@.service|0644" \
+    "99-ezomar-fuxi.rules|/etc/udev/rules.d/99-ezomar-fuxi.rules|0644"
+  do
+    IFS='|' read -r f d m <<<"$pair"
+    [ -f "$TPL/$f" ] || continue
+    install_system_quirk "$TPL/$f" "$d" "$m" && changed=1
+  done
+  if [ "$changed" = 1 ]; then
+    sudo systemctl daemon-reload || true
+    sudo udevadm control --reload-rules || true
+    say "Gatilho udev instalado: o mixer sobe sozinho quando o fone aparecer."
+  fi
+else
+  say "Falta instalar o gatilho udev (precisa de root). Rode:"
+  say "  sudo install -m 0755 $TPL/ezomar-fuxi-levels /usr/local/bin/ezomar-fuxi-levels"
+  say "  sudo install -m 0644 $TPL/ezomar-fuxi-levels@.service /etc/systemd/system/ezomar-fuxi-levels@.service"
+  say "  sudo install -m 0644 $TPL/99-ezomar-fuxi.rules /etc/udev/rules.d/99-ezomar-fuxi.rules"
+  say "  sudo systemctl daemon-reload && sudo udevadm control --reload-rules"
+fi
+
 # Conferir se a regra PEGOU, não só se o arquivo existe.
 #
 # A primeira versão desta regra casava por node.name. O arquivo era instalado, o
