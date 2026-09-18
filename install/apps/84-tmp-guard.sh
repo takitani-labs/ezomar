@@ -23,4 +23,4 @@ install -D -m 0644 "$TPL/ezomar-tmp-guard.service" "$UNIT_DIR/ezomar-tmp-guard.s
 install -D -m 0644 "$TPL/ezomar-tmp-guard.timer" "$UNIT_DIR/ezomar-tmp-guard.timer"
 systemctl --user daemon-reload
 systemctl --user enable --now ezomar-tmp-guard.timer >/dev/null 2>&1 || true
-say "Avisa quando o /tmp passar de ${EZOMAR_TMP_WARN:-85}%. Log: ~/.local/state/ezomar/tmp-guard.log"
+say "Avisa quando o disco passar de ${EZOMAR_DISK_WARN:-85}%, dizendo quem ocupa. Log: ~/.local/state/ezomar/tmp-guard.log"
