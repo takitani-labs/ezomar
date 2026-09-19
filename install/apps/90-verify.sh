@@ -59,6 +59,36 @@ done
 [ "$BROKEN" -eq 0 ] && ok "projects/ compartilhado em todos os perfis" \
   || bad "$BROKEN perfil(is) sem symlink projects/ -> ~/.claude/projects (dotfiles)"
 
+# Plugins iguais em todos os perfis de conta.
+#
+# Ao contrário de skills/ e projects/, o plugins/ de cada perfil é um diretório
+# próprio, então nada os mantém juntos sozinho. Medido em 19/09/2026: quatro
+# perfis estavam sem feature-dev e playwright, e um só tinha typesafe, porque o
+# módulo 40 instalava no perfil que estivesse ativo. Um comando que some sem
+# erro, só num perfil, não se denuncia: tem que ser conferido.
+#
+# Os perfis de proxy (codex, gemini, kimi, minimax) têm ANTHROPIC_BASE_URL e
+# nunca tiveram plugins, então ficam de fora, igual ao módulo 40.
+REF="$HOME/.claude/plugins/installed_plugins.json"
+if [ -f "$REF" ] && command -v jq >/dev/null 2>&1; then
+  WANT="$(jq -r '.plugins | keys[]' "$REF" 2>/dev/null | sort)"
+  DRIFT=""
+  for d in "$HOME"/.claude-profiles/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"
+    [ -f "$d/settings.json" ] || continue
+    [ -n "$(jq -r '.env.ANTHROPIC_BASE_URL // empty' "$d/settings.json" 2>/dev/null)" ] && continue
+    HAVE="$(jq -r '.plugins | keys[]' "$d/plugins/installed_plugins.json" 2>/dev/null | sort)"
+    MISSING="$(comm -23 <(printf '%s\n' "$WANT") <(printf '%s\n' "$HAVE") | tr '\n' ' ')"
+    [ -n "${MISSING// /}" ] && DRIFT="$DRIFT$(basename "$d"): ${MISSING}; "
+  done
+  if [ -z "$DRIFT" ]; then
+    ok "plugins iguais em todos os perfis de conta"
+  else
+    bad "plugins faltando -> $DRIFT(rode install/apps/40-claude-plugins.sh)"
+  fi
+fi
+
 echo "[ezomar][verify] Agentes"
 for t in herdr codex gemini grok ai-usagebar pw-keepalive cli-proxy-api pidbox; do
   command -v "$t" >/dev/null 2>&1 && ok "$t" || bad "$t ausente"
