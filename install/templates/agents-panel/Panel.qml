@@ -582,7 +582,10 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
+    // Mais largo desde que cada conta virou UMA linha: nome, os tres
+    // percentuais e o prazo dividem a mesma faixa, e a 380 o nome elidia
+    // antes de o plano aparecer.
+    contentWidth: panel.fittedContentWidth(Style.space(560))
     // Taller than the control panels on purpose: this one is a dashboard, and
     // the whole point is reading limits and history without scrolling.
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(640))
@@ -946,7 +949,7 @@ Panel {
     readonly property bool alarming: !!row && (row.blocked || row.percent >= 0.9)
     readonly property bool known: !!row && row.percent >= 0
 
-    implicitHeight: overviewContent.implicitHeight + Style.space(10) * 2
+    implicitHeight: overviewContent.implicitHeight + Style.space(6) * 2
     radius: Style.cornerRadius
     // O mesmo preenchimento que o resto do shell usa para "isto está
     // selecionado"; inventar um alpha aqui daria um destaque fora do tema.
@@ -970,11 +973,11 @@ Panel {
       anchors.leftMargin: Style.space(8)
       anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
-      spacing: Style.space(5)
+      spacing: Style.space(3)
 
       Item {
         width: parent.width
-        implicitHeight: Math.max(overviewName.implicitHeight, overviewValue.implicitHeight)
+        implicitHeight: Math.max(overviewName.implicitHeight, overviewMetrics.implicitHeight, overviewValue.implicitHeight)
 
         Text {
           id: overviewName
@@ -994,8 +997,43 @@ Panel {
           font.pixelSize: Style.font.body
           elide: Text.ElideRight
           anchors.left: parent.left
-          anchors.right: overviewValue.left
+          anchors.right: overviewMetrics.left
           anchors.rightMargin: Style.spacing.sm
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        // Os tres numeros do Akita, agora NA MESMA linha do nome.
+        //
+        // Eram uma segunda linha, e com sete contas as tres linhas por cartao
+        // estouravam os 640 do painel e obrigavam a rolar. Rolar para comparar
+        // contas e o oposto do que este painel serve para fazer: a comparacao
+        // exige ver todas de uma vez.
+        //
+        // Os prazos saem daqui de proposito. O da semana ja esta a direita, na
+        // mesma altura, e repetir "3h 16m" duas vezes na mesma linha gastava a
+        // largura que o nome da conta precisa.
+        Text {
+          id: overviewMetrics
+          textFormat: Text.PlainText
+          visible: text !== ""
+          text: {
+            if (!overviewRow.row) return ""
+            var parts = []
+            var wp = overviewRow.row.windowPercent
+            if (wp >= 0) parts.push("janela " + Math.round(wp * 100) + "%")
+            var pc = overviewRow.row.percent
+            if (pc >= 0) parts.push("semana " + Math.round(pc * 100) + "%")
+            if (overviewRow.row.scopedPercent >= 0) {
+              var name = overviewRow.row.scopedLabel.replace(/\s*weekly\s*$/i, "")
+              parts.push(name.toLowerCase() + " " + Math.round(overviewRow.row.scopedPercent * 100) + "%")
+            }
+            return parts.join("  ·  ")
+          }
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          anchors.right: overviewValue.left
+          anchors.rightMargin: Style.spacing.md
           anchors.verticalCenter: parent.verticalCenter
         }
 
@@ -1027,48 +1065,9 @@ Panel {
         }
       }
 
-      // Os tres numeros do Akita, um do lado do outro: a janela de agora, a
-      // semana, e o limite do modelo. Cada um responde uma pergunta diferente e
-      // sozinho nenhum deles deixa planejar: a semana diz quanto sobra ate a
-      // data, a janela diz se da para comecar agora, e o Fable diz o que da
-      // para rodar. Some a parte que o fornecedor nao reporta, em vez de
-      // mostrar um traco onde nunca vai haver numero.
-      Text {
-        textFormat: Text.PlainText
-        width: parent.width
-        visible: text !== ""
-        text: {
-          if (!overviewRow.row) return ""
-          var parts = []
-          var wp = overviewRow.row.windowPercent
-          if (wp >= 0) {
-            var wms = overviewRow.row.windowResetMs
-            parts.push("janela " + Math.round(wp * 100) + "%"
-              + (wms > 0 ? " · " + root.formatDuration(wms) : ""))
-          }
-          var pc = overviewRow.row.percent
-          if (pc >= 0) {
-            var pms = overviewRow.row.resetMs
-            parts.push("semana " + Math.round(pc * 100) + "%"
-              + (pms > 0 ? " · " + root.formatDuration(pms) : ""))
-          }
-          if (overviewRow.row.scopedPercent >= 0) {
-            // "Fable Weekly" vira "fable": a linha ja diz "semana" ao lado, e o
-            // que falta saber aqui e de qual modelo e o limite.
-            var name = overviewRow.row.scopedLabel.replace(/\s*weekly\s*$/i, "")
-            parts.push(name.toLowerCase() + " " + Math.round(overviewRow.row.scopedPercent * 100) + "%")
-          }
-          return parts.join("   ·   ")
-        }
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        elide: Text.ElideRight
-      }
-
       Rectangle {
         width: parent.width
-        height: Style.space(4)
+        height: Style.space(3)
         radius: height / 2
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
 
