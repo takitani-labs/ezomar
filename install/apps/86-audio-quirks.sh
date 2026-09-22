@@ -141,6 +141,45 @@ else
   say "  sudo systemctl daemon-reload && sudo udevadm control --reload-rules"
 fi
 
+# Semear a preferência de saída numa máquina nova.
+#
+# Quem decide o dispositivo padrão no WirePlumber não é a prioridade do
+# aparelho: é o nome guardado em default.configured.audio.sink, que vale +30000
+# na disputa (find-selected-default-node.lua). Medido aqui em 21/09/2026, o fone
+# tem priority.session 1109 e o HDMI do monitor 696, então sem nada guardado
+# quem ganha é uma escolha antiga qualquer, e numa instalação nova é o HDMI que
+# acaba levando. O sintoma é "o fone mutou": o som está tocando, no monitor.
+#
+# O arquivo mora em ~/.local/state, fora do $HOME versionado e fora de qualquer
+# backup de configuração, então ele é exatamente a categoria de coisa que uma
+# formatação leva sem avisar.
+#
+# SÓ SEMEIA SE NÃO EXISTIR. O arquivo é uma pilha que o WirePlumber reescreve
+# sempre que alguém escolhe uma saída no painel; sobrescrever aqui desfaria a
+# escolha do dono a cada execução do instalador, que é pior do que o problema.
+seed_default_nodes() {
+  local state="${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber"
+  local file="$state/default-nodes"
+  local sink="alsa_output.usb-XiiSound_Technology_Corporation_Fuxi-H3-00.analog-stereo"
+  local source="alsa_input.usb-3142_fifine_Microphone-00.analog-stereo"
+
+  if [ -e "$file" ]; then
+    say "Preferência de saída já existe; não mexo (é o dono quem escolhe)."
+    return 0
+  fi
+
+  mkdir -p "$state"
+  cat > "$file" <<EOF
+[default-nodes]
+default.configured.audio.sink=$sink
+default.configured.audio.source=$source
+EOF
+  say "Preferência semeada: saída no fone, entrada no fifine."
+  say "Vale no próximo start do wireplumber."
+}
+
+seed_default_nodes
+
 # Conferir se a regra PEGOU, não só se o arquivo existe.
 #
 # A primeira versão desta regra casava por node.name. O arquivo era instalado, o
