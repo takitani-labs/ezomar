@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Registra temperatura, frequência e carga, porque esta máquina não registrava
+# nada e a pergunta "meu PC está esquentando demais?" não tinha resposta.
+#
+# O que se quer saber num Ryzen 9 9950X não é a temperatura sozinha. O Zen 5
+# tem alvo térmico de 95°C e o algoritmo de boost sobe o clock até encostar
+# nele: 92°C sob carga é o projeto funcionando, não aviso. O que distingue
+# "saudável" de "sufocado" é a FREQUÊNCIA nessa temperatura. Base do 9950X é
+# 4300 MHz; segurando 5200 com todos os núcleos ocupados, sobra margem. Caindo
+# para perto ou abaixo de 4300 com a temperatura colada em 95, aí sim falta
+# refrigeração.
+#
+# Por isso cada amostra guarda os três juntos. Uma coluna sozinha engana.
+#
+# A potência do pacote ficaria de fora: /sys/class/powercap/.../energy_uj é
+# legível só por root desde a mitigação do PLATYPUS, e este serviço roda como
+# usuário. É lida quando estiver acessível, e a coluna fica vazia quando não.
+#
+#   ezomar-thermal-log            grava uma amostra
+#   ezomar-thermal-log report     resume o que já foi gravado
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ezomar"
+CSV="$STATE/thermal.csv"
+RAPL=/sys/class/powercap/intel-rapl:0/energy_uj
+
+sample() {
+  mkdir -p "$STATE"
+  [ -f "$CSV" ] || echo "timestamp,tctl,tccd1,tccd2,freq_avg_mhz,freq_max_mhz,load1,running,watts" > "$CSV"
+
+  local s tctl tccd1 tccd2 freq_avg freq_max load1 running watts=""
+  s="$(sensors 2>/dev/null)" || return 0
+  tctl="$(printf '%s' "$s"  | grep -oP 'Tctl:\s+\+\K[0-9.]+'  | head -1)"
+  tccd1="$(printf '%s' "$s" | grep -oP 'Tccd1:\s+\+\K[0-9.]+' | head -1)"
+  tccd2="$(printf '%s' "$s" | grep -oP 'Tccd2:\s+\+\K[0-9.]+' | head -1)"
+  [ -n "$tctl" ] || return 0
+
+  read -r freq_avg freq_max < <(grep 'MHz' /proc/cpuinfo |
+    awk '{t+=$4; if($4>m)m=$4; n++} END {if(n)printf "%.0f %.0f", t/n, m; else printf "0 0"}')
+  load1="$(awk '{print $1}' /proc/loadavg)"
+  # Processos realmente na fila, que é o que explica uma temperatura alta. O
+  # load average de um minuto ainda conta I/O e chega atrasado.
+  running="$(awk '{split($4,a,"/"); print a[1]}' /proc/loadavg)"
+
+  if [ -r "$RAPL" ]; then
+    local e1 e2
+    e1="$(cat "$RAPL" 2>/dev/null)"; sleep 1; e2="$(cat "$RAPL" 2>/dev/null)"
+    [ -n "$e1" ] && [ -n "$e2" ] && [ "$e2" -ge "$e1" ] &&
+      watts="$(awk -v a="$e1" -v b="$e2" 'BEGIN{printf "%.1f", (b-a)/1000000}')"
+  fi
+
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    "$(date -Is)" "$tctl" "${tccd1:-}" "${tccd2:-}" \
+    "$freq_avg" "$freq_max" "$load1" "$running" "$watts" >> "$CSV"
+}
+
+report() {
+  [ -f "$CSV" ] || { echo "Ainda não há amostras em $CSV"; exit 0; }
+  local n
+  n=$(( $(wc -l < "$CSV") - 1 ))
+  [ "$n" -gt 0 ] || { echo "Ainda não há amostras."; exit 0; }
+
+  echo "Amostras: $n   (de $(sed -n '2p' "$CSV" | cut -d, -f1 | cut -dT -f1) até hoje)"
+  echo
+
+  # Só as amostras COM carga interessam para julgar refrigeração. Uma máquina
+  # ociosa a 45°C não diz nada sobre o cooler, e misturar as duas populações na
+  # mesma média é o jeito mais fácil de concluir errado.
+  awk -F, -v base=4300 '
+    NR==1 { next }
+    $2=="" { next }
+    {
+      total++
+      if ($2+0 > maxt) { maxt=$2+0; maxt_when=$1 }
+      if ($2+0 >= 90) hot++
+      if ($8+0 >= 8) {
+        busy++; bt+=$2; bf+=$5
+        if ($5+0 < base) below++
+        if ($5+0 > bmax) bmax=$5+0
+      }
+    }
+    END {
+      printf "Pico de Tctl:            %.1f C   em %s\n", maxt, maxt_when
+      printf "Amostras acima de 90 C:  %d de %d  (%.0f%%)\n", hot, total, total?100*hot/total:0
+      print  ""
+      if (busy == 0) { print "Nenhuma amostra sob carga ainda; volte depois de um dia de agentes."; exit }
+      printf "SOB CARGA (8+ processos na fila), %d amostras:\n", busy
+      printf "  temperatura media:     %.1f C\n", bt/busy
+      printf "  frequencia media:      %.0f MHz   (base do chip: %d)\n", bf/busy, base
+      printf "  frequencia maxima:     %.0f MHz\n", bmax
+      printf "  amostras ABAIXO da base: %d  (%.0f%%)\n", below, 100*below/busy
+      print  ""
+      if (below*100/busy > 10)
+        print "VEREDITO: ele cai abaixo do clock base com frequencia. Isso e falta de"
+      else if (bf/busy > base*1.15)
+        print "VEREDITO: segurando bem acima do clock base sob carga. A temperatura alta e"
+      else
+        print "VEREDITO: sustentando perto do clock base. Margem existe, mas e estreita;"
+      if (below*100/busy > 10)
+        print "          refrigeracao de verdade, e trocar o cooler compra desempenho."
+      else if (bf/busy > base*1.15)
+        print "          o alvo de projeto sendo usado, nao sufocamento. Mais refrigeracao"
+      else
+        print "          mais refrigeracao provavelmente compra algum MHz."
+      if (bf/busy > base*1.15 && below*100/busy <= 10)
+        print "          compra MHz, nao graus."
+    }
+  ' "$CSV"
+}
+
+case "${1:-sample}" in
+  sample) sample ;;
+  report) report ;;
+  *) echo "Uso: ezomar-thermal-log [sample|report]" >&2; exit 1 ;;
+esac

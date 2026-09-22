@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample CPU temperature, frequency and load
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ezomar-thermal-log sample
+# A amostra lê sensores e /proc e dura menos de dois segundos. Ela não pode
+# competir com o trabalho que está justamente causando a temperatura medida.
+Nice=19
+IOSchedulingClass=idle

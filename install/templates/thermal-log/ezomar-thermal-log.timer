@@ -1,0 +1,12 @@
+[Unit]
+Description=Sample CPU temperature every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+# Sem Persistent: uma máquina desligada não tem temperatura, e disparar em lote
+# no boot só enfileira amostras idênticas de uma máquina fria.
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
