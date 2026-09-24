@@ -24,7 +24,14 @@ set -euo pipefail
 # repo exige de todo script; sem ele o lint simplesmente não roda e ninguém
 # percebe. Os dois faltaram na primeira máquina Omarchy e só apareceram quando
 # alguma coisa passou batido.
-PKGS=(zsh atuin unzip mosh 1password-cli gitleaks shellcheck)
+# remmina e freerdp entram juntos e nessa ordem de importância: o remmina
+# sozinho abre, lista os perfis e falha em CONECTAR, porque o protocolo RDP vem
+# do plugin que depende do freerdp. Quem instala só o primeiro descobre isso no
+# pior momento, com a janela aberta e a conexão recusada sem dizer por quê.
+# Os perfis (~/.local/share/remmina) e o segredo que cifra as senhas gravadas
+# (~/.config/remmina/remmina.pref) moram no $HOME e entram no backup do borg;
+# o que faltava era só o programa.
+PKGS=(zsh atuin unzip mosh 1password-cli gitleaks shellcheck remmina freerdp)
 
 # Dependências do meeting-rig (módulo 74), que só roda quando o repo de
 # ferramentas está configurado. Instalar sempre deixaria dois pacotes de áudio e
