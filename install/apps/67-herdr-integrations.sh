@@ -52,6 +52,37 @@ if [ "$claude_count" -eq 0 ] && [ -d "$HOME/.claude" ]; then
     env CLAUDE_CONFIG_DIR="$HOME/.claude" herdr integration install claude
 fi
 
+# Every other agent herdr knows about, and not just the two we wired by hand.
+#
+# Claude e Codex acima são casos especiais porque têm VÁRIAS contas, cada uma com
+# o seu diretório de configuração, e cada uma precisa do hook. Os demais têm um
+# diretório só e o herdr instala sozinho.
+#
+# Por que faltavam: este módulo nasceu com claude e codex escritos na mão e
+# nunca cresceu junto com a máquina. O herdr já suportava kimi, grok e opencode,
+# e os três estavam simplesmente desligados. O sintoma não era erro nenhum: as
+# abas desses agentes voltavam de um restart sem sessão para retomar, e parecia
+# limitação do herdr quando era integração que ninguém instalou.
+#
+# A LISTA VEM DO HERDR, não daqui. `herdr integration` imprime o que ele sabe
+# instalar, e é ele quem decide se o agente existe nesta máquina: quando não
+# existe, recusa com "config directory not found ... install X first". Essa
+# recusa é resposta correta, não falha, então não entra em FAILED. Manter uma
+# lista própria aqui garantiria que o próximo agente suportado ficasse de fora
+# pelo mesmo motivo que estes ficaram.
+# `herdr integration` sem subcomando imprime o uso e sai com 2. Sob set -e isso
+# derruba o módulo inteiro antes de chegar aqui, que foi exatamente o que
+# aconteceu na primeira versão: nada instalava e nem o "Done." saía.
+KNOWN="$(herdr integration 2>&1 | grep -oE 'herdr integration install [a-z0-9-]+' | awk '{print $4}' | sort -u || true)"
+for agent in $KNOWN; do
+  case "$agent" in
+    claude | codex) continue ;;  # tratados acima, por conta
+  esac
+  if herdr integration install "$agent" >/dev/null 2>&1; then
+    echo "[ezomar/herdr-integrations] $agent: instalado."
+  fi
+done
+
 if [ ${#FAILED[@]} -gt 0 ]; then
   echo "[ezomar/herdr-integrations] Falharam: ${FAILED[*]}" >&2
   exit 1
