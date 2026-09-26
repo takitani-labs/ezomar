@@ -31,7 +31,12 @@ set -euo pipefail
 # Os perfis (~/.local/share/remmina) e o segredo que cifra as senhas gravadas
 # (~/.config/remmina/remmina.pref) moram no $HOME e entram no backup do borg;
 # o que faltava era só o programa.
-PKGS=(zsh atuin unzip mosh 1password-cli gitleaks shellcheck remmina freerdp)
+# qbittorrent é o aplicativo com interface, não o qbittorrent-nox. O -nox é o
+# daemon com interface web, pensado para servidor: fica rodando o tempo todo,
+# abre uma porta HTTP e precisa de unidade systemd. Aqui o uso é abrir quando há
+# o que baixar e fechar depois, então o app comum é o certo, e ele já traz o
+# .desktop que o lançador do Omarchy enxerga sem configuração nenhuma.
+PKGS=(zsh atuin unzip mosh 1password-cli gitleaks shellcheck remmina freerdp qbittorrent)
 
 # Dependências do meeting-rig (módulo 74), que só roda quando o repo de
 # ferramentas está configurado. Instalar sempre deixaria dois pacotes de áudio e
