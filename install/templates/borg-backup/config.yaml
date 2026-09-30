@@ -17,7 +17,29 @@ repositories:
     label: zeus
 
 encryption_passcommand: /home/opik/.local/bin/borg-passphrase
-ssh_command: ssh -i /home/opik/.ssh/hetzner-storagebox -o BatchMode=yes
+
+# As opções do ssh vieram de uma falha de verdade, em 30/09/2026: a internet
+# oscilou entre 03:28 e 03:37, o Hetzner falhou às 03:33 e o log disse "Network
+# is unreachable".
+#
+# Essa mensagem enganava. O nome resolve para IPv4 e IPv6, esta máquina não tem
+# rota IPv6, e o ssh reporta só o erro do ÚLTIMO endereço que tentou. O IPv4
+# caiu primeiro por causa da queda, depois o IPv6 recusou na hora, e sobrou no
+# log o motivo do IPv6. `AddressFamily=inet` faz o erro que aparece ser o do
+# endereço que de fato importa.
+#
+# ConnectTimeout: sem ele a conexão levou 4 minutos para desistir, tempo que a
+# retentativa abaixo usa melhor. ServerAlive: uma queda no meio do envio é
+# detectada em uns 3 minutos, em vez de ficar pendurada até o TCP desistir.
+ssh_command: ssh -i /home/opik/.ssh/hetzner-storagebox -o BatchMode=yes -o AddressFamily=inet -o ConnectTimeout=30 -o ServerAliveInterval=60
+
+# Queda de rede de madrugada acontece, e sem retentativa uma oscilação de dez
+# minutos custa o offsite do dia inteiro. A espera cresce a cada tentativa (5,
+# 10 e 15 minutos), então três tentativas cobrem meia hora de rede instável. Só
+# o repositório que falhou é repetido: o ZEUS não roda de novo por causa do
+# Hetzner.
+retries: 3
+retry_wait: 300
 
 # zstd em nível baixo: o gargalo aqui é a rede e o disco do NAS, não a CPU, e o
 # ganho de comprimir mais que isto não paga o tempo.
