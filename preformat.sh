@@ -366,7 +366,7 @@ BACKUP_SCRIPT="backup/backup-ai.sh"
 AI_STATE=(
   "$HOME/.claude/projects"          # as conversas do Claude Code
   "$HOME/.claude.json"              # servidores MCP e tokens
-  "$HOME/.codex" "$HOME/.kimi" "$HOME/.cli-proxy-api"
+  "$HOME/.codex" "$HOME/.kimi-code" "$HOME/.kimi-code-profiles" "$HOME/.cli-proxy-api"
   "$HOME/.config/ai-usagebar"
   "$HOME/.config/herdr/session.json"
   "$HOME/.ssh" "$HOME/.gnupg" "$HOME/.aws" "$HOME/.kube" "$HOME/.config/gh"

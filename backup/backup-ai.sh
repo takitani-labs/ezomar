@@ -56,7 +56,8 @@ INCLUDE=(
   # --- os outros CLIs de agente: OAuth, config e sessões -------------------
   .codex-profiles             # um CODEX_HOME por conta (módulo 64): auth.json + config.toml
   .codex                      # o symlink que aponta para a conta ativa
-  .kimi-code
+  .kimi-code                  # conta Kimi padrão e hooks do herdr (o binário fica de fora)
+  .kimi-code-profiles         # uma pasta por conta Kimi além da padrão (módulo 64)
   .kimi                       # home anterior à migração; ainda guarda credentials
   .gemini
   .grok
@@ -153,6 +154,8 @@ EXCLUDE_PATTERNS=(
   '.claude/backup-rename-*'
   '.kimi-code/cache'
   '.kimi-code/search-index'
+  '.kimi-code-profiles/*/cache'
+  '.kimi-code-profiles/*/search-index'
   '.grok/marketplace-cache'
   '.gemini/tmp'
   # Binários que o CLI rebaixa sozinho na primeira execução.

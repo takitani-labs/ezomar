@@ -83,6 +83,28 @@ for agent in $KNOWN; do
   fi
 done
 
+# As contas Kimi além da padrão (módulo 64) moram em ~/.kimi-code-profiles, e o
+# laço acima só instala na ~/.kimi-code. Sem hook, o herdr não guarda o id da
+# sessão, e a aba dessa conta volta de um restart vazia.
+#
+# Só instala onde ainda não há hook NENHUM. O login do kimi reescreve o
+# config.toml inteiro e apaga os comentários, inclusive os marcadores com que o
+# herdr reconhece o próprio bloco. Rodar o install de novo numa conta já logada
+# duplica os 12 hooks (medido: 12 viram 24), e cada evento passa a ser
+# reportado duas vezes. O hook pode apontar para a pasta da própria conta ou
+# para ~/.kimi-code/hooks (quando o config foi copiado pelo módulo 64); os dois
+# servem.
+for home in "$HOME"/.kimi-code-profiles/*/; do
+  [ -d "$home" ] || continue
+  home="${home%/}"
+  if grep -q 'herdr-agent-state.sh' "$home/config.toml" 2>/dev/null; then
+    echo "[ezomar/herdr-integrations] kimi ($(basename "$home")): hooks já presentes."
+    continue
+  fi
+  install_integration "Kimi ($(basename "$home"))" \
+    env KIMI_CODE_HOME="$home" herdr integration install kimi
+done
+
 if [ ${#FAILED[@]} -gt 0 ]; then
   echo "[ezomar/herdr-integrations] Falharam: ${FAILED[*]}" >&2
   exit 1

@@ -84,9 +84,10 @@ Rodam em ordem de nome, e a numeração importa.
 | `61-ai-usagebar.sh` | instala só o binário ai-usagebar, usado como backend de quotas pelo painel nativo |
 | `62-cliproxyapi-exato.sh` | cria a segunda instância do CLIProxyAPI para a conta Codex de trabalho |
 | `64-codex-profiles.sh` | separa as contas do Codex CLI por `CODEX_HOME` e compartilha a configuração |
+| `64-kimi-profiles.sh` | cria uma pasta por conta extra do Kimi Code CLI (`KIMI_CODE_HOME`); a padrão fica em `~/.kimi-code` |
 | `65-agent-usage-accounts.sh` | abre uma aba por conta Claude/Codex no painel nativo de agentes do Omarchy |
 | `66-claude-profile-restore.sh` | instala o mapa de sessão para o herdr restaurar cada pane no perfil Claude correto |
-| `67-herdr-integrations.sh` | instala os hooks oficiais de session id em todos os profiles Claude e no Codex |
+| `67-herdr-integrations.sh` | instala os hooks oficiais de session id em todos os profiles Claude, no Codex e em cada conta Kimi |
 | `68-pidbox.sh` | opt-in: guard de namespace de PID contra `kill(-1)` de suítes de teste |
 | `69-herdr-profile-switch.sh` | instala `Ctrl+B, A` para trocar a conta do Codex ou Claude sem perder a sessão |
 | `70-collie.sh` | instala opcionalmente o plugin Collie, sem publicar o bridge |

@@ -93,6 +93,28 @@ echo "[ezomar][verify] Agentes"
 for t in herdr codex gemini grok ai-usagebar pw-keepalive cli-proxy-api pidbox; do
   command -v "$t" >/dev/null 2>&1 && ok "$t" || bad "$t ausente"
 done
+if [ -x "$HOME/.kimi-code/bin/kimi" ]; then
+  ok "kimi"
+elif [ "${EZOMAR_INSTALL_KIMI:-true}" = false ]; then
+  skip "kimi desligado por EZOMAR_INSTALL_KIMI"
+else
+  bad "kimi ausente (módulo 59)"
+fi
+# Cada conta Kimi além da padrão precisa do próprio login, e o config.toml dela
+# tem de ser arquivo: o kimi troca um symlink por arquivo comum na primeira
+# escrita, e aí as duas contas passam a divergir sem aviso.
+for home in "$HOME"/.kimi-code-profiles/*/; do
+  [ -d "$home" ] || continue
+  name="$(basename "$home")"
+  if compgen -G "$home/credentials/*.json" >/dev/null; then
+    ok "kimi $name: autenticado"
+  else
+    bad "kimi $name: sem login (KIMI_CODE_HOME=$home kimi login --region global)"
+  fi
+  [ -L "$home/config.toml" ] && bad "kimi $name: config.toml é symlink"
+  grep -q 'herdr-agent-state.sh' "$home/config.toml" 2>/dev/null \
+    || bad "kimi $name: sem hooks do herdr, a aba não volta no restart (módulo 67)"
+done
 [ -x "$HOME/.local/bin/herdr-switch-agent-profile" ] \
   && ok "seletor de profile Codex/Claude do herdr" \
   || bad "herdr-switch-agent-profile ausente"
@@ -156,6 +178,7 @@ echo "  claude            login do Claude Code (um por perfil; claude-login.sh g
 echo "  ops               1Password"
 echo "  bws personal      Bitwarden"
 echo "  codex login       uma vez por CODEX_HOME; gemini e grok login no primeiro uso"
+echo "  kimi login        um por conta, no navegador logado nela (módulo 64 mostra o comando)"
 echo "  chezmoi apply     depois do 1Password, para rodar os run_once_after_*"
 
 exit "$FAIL"
