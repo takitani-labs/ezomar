@@ -77,6 +77,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `35-shell.sh` | `chsh` para zsh, depois do chezmoi ter entregue o `.zshrc` |
 | `40-claude-plugins.sh` | marketplaces e os 10 plugins do Claude Code |
 | `45-webapps.sh` | remove os web apps que o Omarchy instala e esta máquina não usa |
+| `46-flea.sh` | instala o Flea da release do GitHub (`flea-bin`) e o torna o gerenciador de arquivos padrão (pastas, diálogos de arquivo, Super+Shift+F) |
 | `50-personal.sh` | roda seus módulos privados, se houver |
 | `56-herdr.sh` | instala o herdr pelo instalador oficial e habilita o unit, se os dotfiles o trouxeram |
 | `58-npm-ai-clis.sh` | `codex`, `gemini` e `grok` via npm, em `~/.npm-global` |

@@ -39,6 +39,8 @@ set -euo pipefail
 # microsoft-edge-stable-bin vem do repositório do próprio Omarchy, empacotado e
 # assinado por ele como o google-chrome, e não do AUR. Por isso entra aqui no
 # pacman junto com o resto, sem helper de AUR nem build local.
+# O Flea (gerenciador de arquivos) NÃO entra aqui: vem da release do GitHub,
+# pelo flea-bin do AUR, e quem instala é o módulo 46.
 PKGS=(zsh atuin unzip mosh 1password-cli gitleaks shellcheck remmina freerdp qbittorrent
   microsoft-edge-stable-bin)
 
