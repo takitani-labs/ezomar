@@ -1,0 +1,59 @@
+# Conta extra do ai-usagebar para a ponte do painel de agentes
+# (ezomar-agent-usage-ai-usagebar). Copie para
+# ~/.config/ai-usagebar/accounts/NOME.toml, por exemplo personal.toml, e rode
+# `chmod 600` nele, porque a chave fica inline. A ponte roda
+# `ai-usagebar --config NOME.toml usage --json` com um XDG_CACHE_HOME só dela e
+# publica cada provider como <id>-NOME, com a aba "<nome> · NOME". NOME não deve
+# repetir o rótulo de uma conta nomeada do ai-usagebar (kimi@personal na config
+# padrão também vira kimi-personal, e uma das duas abas não sai).
+#
+# Para pausar a conta, renomeie o arquivo para NOME.toml.off: a ponte deixa de
+# rodá-la e tira a aba do painel, e apagar o arquivo faz o mesmo. Trocar o
+# `enabled = true` do [kimi] por false só pausa enquanto TODOS os outros
+# providers deste arquivo estiverem desligados, como estão abaixo. Se sobrar
+# algum ligado, o ai-usagebar continua respondendo por ele, a conta segue viva
+# e a aba do Kimi fica congelada no último valor.
+#
+# É um arquivo por conta porque o ai-usagebar aceita uma única seção [kimi] por
+# config, e o [kimi] não tem [[kimi.accounts]] como zai e openrouter têm.
+# Este exemplo mora num repo público: a chave de verdade nunca entra aqui.
+
+[kimi]
+enabled = true
+# A chave da conta. Com region = "global" (api.kimi.ai) ela sai do console do
+# kimi.ai, em www.kimi.ai/code/console. O kimi.com/code/console é o da região
+# "cn" (api.kimi.com); só use ele junto com region = "cn".
+api_key = ""
+# Vazio de propósito: desliga a busca por KIMI_API_KEY no ambiente, que nesta
+# máquina guarda a chave da OUTRA conta. Sem esta linha vale o padrão
+# "KIMI_API_KEY", que é lido antes do api_key e ganha dele. A ponte já tira as
+# *_API_KEY do ambiente das contas extras; a linha protege quem rodar
+# `ai-usagebar --config NOME.toml` à mão.
+api_key_env = ""
+# Sem api_key, o ai-usagebar cai no login do kimi CLI, e o padrão desse caminho
+# é ~/.kimi-code/credentials/kimi-code.json, o login da conta PADRÃO. Uma cópia
+# esquecida sem chave mostraria então a cota da outra conta sob esta aba, sem
+# erro nenhum. Nada pode existir dentro de /dev/null, então aqui ela falha com
+# "no credentials" até a chave entrar (conferido no ai-usagebar 1.26.0 com um
+# login falso num HOME de teste). Só aponte para um login de verdade se esta
+# conta tiver um kimi CLI próprio.
+credentials_path = "/dev/null/ezomar-conta-extra-sem-login-do-kimi-cli"
+# kimi.ai. O padrão "auto" segue ~/.kimi-code/region, que é da conta padrão.
+region = "global"
+
+# O resto fica desligado explicitamente, senão cada conta extra repetiria as
+# abas da config padrão com as credenciais dela. anthropic e openai já nascem
+# ligados e leriam ~/.claude e ~/.codex; zai e openrouter também ficam ligados
+# quando a seção é omitida (conferido com `ai-usagebar --config ARQUIVO vendors
+# --json` no 1.26.0) e leriam ZAI_API_KEY e OPENROUTER_API_KEY do ambiente.
+[anthropic]
+enabled = false
+
+[openai]
+enabled = false
+
+[zai]
+enabled = false
+
+[openrouter]
+enabled = false

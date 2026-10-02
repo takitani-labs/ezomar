@@ -5,16 +5,42 @@ set -euo pipefail
 # per-record contract. For deterministic tests without credentials, pass
 # --from-file PATH or set EZOMAR_AI_USAGEBAR_FROM_FILE=PATH. Set
 # EZOMAR_AI_USAGEBAR_BIN to override the live collector executable.
+#
+# Além da config padrão, cada ACCOUNTS_DIR/NOME.toml é uma conta extra. O
+# ai-usagebar só aceita uma seção [kimi] por config, então a segunda conta Kimi
+# precisa de um arquivo inteiro para ela. EZOMAR_AI_USAGEBAR_ACCOUNTS_DIR troca a
+# pasta, para ensaiar com um EZOMAR_AI_USAGEBAR_BIN falso que olha o --config.
 
 REAL_HOME="$HOME"
-USAGE_DIR="${XDG_STATE_HOME:-$REAL_HOME/.local/state}/omarchy/agents/usage"
-CONFIG_FILE="${EZOMAR_AI_USAGEBAR_CONFIG:-$REAL_HOME/.config/ai-usagebar/config.toml}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$REAL_HOME/.config}"
+STATE_HOME="${XDG_STATE_HOME:-$REAL_HOME/.local/state}"
+USAGE_DIR="$STATE_HOME/omarchy/agents/usage"
+# O ai-usagebar acha a config padrão por XDG_CONFIG_HOME (conferido no 1.26.0).
+# Olhar só ~/.config aqui faria a ponte ficar quieta com a config presente, ou
+# rodar por causa de um arquivo que o binário nem vai ler.
+CONFIG_FILE="${EZOMAR_AI_USAGEBAR_CONFIG:-$CONFIG_HOME/ai-usagebar/config.toml}"
+ACCOUNTS_DIR="${EZOMAR_AI_USAGEBAR_ACCOUNTS_DIR:-$CONFIG_HOME/ai-usagebar/accounts}"
+# Qual conta extra publicou cada arquivo, para a poda saber o que apagar quando
+# a conta some. Uma linha por arquivo: nome publicado, TAB, nome da conta.
+ACCOUNTS_STATE="$STATE_HOME/ezomar/ai-usagebar-accounts.tsv"
 AI_USAGEBAR_BIN="${EZOMAR_AI_USAGEBAR_BIN:-ai-usagebar}"
 FROM_FILE="${EZOMAR_AI_USAGEBAR_FROM_FILE:-}"
 WORK_DIR=""
+STATUS=0
+EXTRA_CONFIGS=()
+DEFAULT_ARGS=()
+SCRUB_ENV=()
 declare -A SEEN_FILENAMES=()
+# Conta extra -> live ou paused, só para as que têm arquivo nesta rodada.
+declare -A ACCOUNT_STATE=()
+# Arquivo publicado -> conta extra dona dele. Vira o ACCOUNTS_STATE no fim.
+declare -A EXTRA_OWNERS=()
+declare -A DEFAULT_PUBLISHED=()
 
 say() { echo "[ezomar][agent-usage] $*"; }
+# O shellcheck 0.11 deixa de ver o `trap cleanup EXIT` quando o script termina
+# em `exit`, e acusa a função de nunca ser chamada.
+# shellcheck disable=SC2329
 cleanup() {
   if [ -n "$WORK_DIR" ]; then
     rm -rf -- "$WORK_DIR"
@@ -26,8 +52,12 @@ usage() {
   cat <<'EOF'
 Uso: ezomar-agent-usage-ai-usagebar [--from-file ARQUIVO]
 
-Sem --from-file, lê `ai-usagebar usage --json`. Para testes sem chaves,
-EZOMAR_AI_USAGEBAR_FROM_FILE também aceita um payload JSON já capturado.
+Sem --from-file, lê `ai-usagebar usage --json` e, para cada conta extra em
+~/.config/ai-usagebar/accounts/NOME.toml, `ai-usagebar --config NOME.toml usage
+--json`, publicada como <id>-NOME. Uma conta extra apagada, renomeada ou
+pausada perde a aba na rodada seguinte. Para testes sem chaves,
+EZOMAR_AI_USAGEBAR_FROM_FILE também aceita um payload JSON já capturado; nesse
+modo as contas extras não rodam e nenhuma aba é apagada.
 EOF
 }
 
@@ -53,10 +83,272 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# Publica as entradas de um documento `usage --json` já validado. ACCOUNT vazio
+# é a config padrão. Roda sob `|| STATUS=1`, onde o set -e não vale, por isso
+# cada passo que pode falhar trata o próprio erro.
+publish_entries() {
+  local source_json="$1" account="$2"
+  local entry id has_error error filename_id transformed now target tmp
+
+  mkdir -p "$USAGE_DIR" || return 1
+  while IFS= read -r entry; do
+    id="$(jq -r 'if (.id | type) == "string" then .id else "" end' <<<"$entry")"
+    [ -n "$id" ] || continue
+
+    case "${id,,}" in
+      anthropic|anthropic@*|openai|openai@*)
+        # Module 65's native collectors provide authoritative per-account limits
+        # for these vendors, so an aggregate source would create misleading tabs.
+        # O ai-usagebar 1.26.0 publica as contas nomeadas como anthropic@rótulo
+        # e openai@rótulo, então só o id exato deixaria essas passarem. O
+        # anthropic_api (gasto da API) não tem coletor nativo e continua aqui.
+        continue
+        ;;
+    esac
+
+    if [ -n "$account" ]; then
+      # Sem o sufixo, o kimi da conta extra cairia no mesmo arquivo e na mesma
+      # aba da conta padrão, e as duas se sobrescreveriam a cada rodada. O
+      # filtro acima já olhou o id original, então anthropic, openai e as
+      # contas nomeadas deles também ficam de fora numa conta extra.
+      #
+      # O sufixo tem a mesma cara de um id com rótulo: kimi@personal da config
+      # padrão e a conta extra personal viram os dois kimi-personal.json, e o
+      # SEEN_FILENAMES descarta o segundo. Por isso NOME não deve repetir um
+      # rótulo de conta do ai-usagebar.
+      if ! entry="$(jq -ce --arg account "$account" '
+          .id as $id
+          | .display_name = ((if (.display_name | type) == "string" and .display_name != "" then .display_name else $id end) + " · " + $account)
+          | .id = ($id + "-" + $account)
+        ' <<<"$entry")"; then
+        continue
+      fi
+      id="$(jq -r '.id' <<<"$entry")"
+    fi
+
+    has_error="$(jq -r '.error != null' <<<"$entry")"
+    if [ "$has_error" = true ]; then
+      error="$(jq -r 'if (.error | tostring) == "" then "erro sem detalhes" else (.error | tostring) end' <<<"$entry")"
+      say "$id: $error; mantendo o último registro válido." >&2
+      continue
+    fi
+
+    filename_id="$(printf '%s' "$id" \
+      | tr '[:upper:]_' '[:lower:]-' \
+      | sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+    [ -n "$filename_id" ] || continue
+    transformed="$WORK_DIR/$filename_id.json"
+    now="$(date --utc +'%Y-%m-%dT%H:%M:%SZ')"
+    if ! jq -ce --arg now "$now" '
+        {
+          schemaVersion: 1,
+          id: .id,
+          name: (if (.display_name | type) == "string" and .display_name != "" then .display_name else .id end),
+          updatedAt: (if (.fetched_at | type) == "string" and .fetched_at != "" then .fetched_at else $now end),
+          ready: true,
+          hasLocalStats: false,
+          hasPromptStats: false,
+          scope: "account",
+          tierLabel: (if (.plan | type) == "string" then .plan else "" end),
+          usageStatusText: "",
+          authHelpText: "",
+          limits: [
+            (.metrics // [])[]
+            | select(type == "object")
+            | select((.label | type) == "string" and .label != "" and (.percent | type) == "number")
+            | {
+                label: .label,
+                # Escala, e não cosmética: o contrato nativo guarda FRAÇÃO de 0 a 1
+                # (normalize_utilization devolve min(1.0, n/100.0), e o painel
+                # trata >= 0.9 como alarme), enquanto o ai-usagebar reporta 0 a
+                # 100, com o campo `value` dizendo "30%". Sem dividir, uma cota de
+                # 4% aparecia como 400% e pintava a barra inteira de vermelho.
+                percent: ([[.percent / 100, 0] | max, 1] | min),
+                resetsAt: (if (.reset_at | type) == "string" then .reset_at else null end)
+              }
+          ],
+          todayPrompts: 0,
+          todaySessions: 0,
+          todayTotalTokens: 0,
+          todayTokensByModel: {},
+          recentDays: [],
+          totalPrompts: 0,
+          totalSessions: 0,
+          activeDays: 0,
+          activeDates: [],
+          modelUsage: {}
+        }
+        | select(.limits | length > 0)
+        | if (
+            (.id | type) == "string" and .id != ""
+            and (.name | type) == "string"
+            and (.tierLabel | type) == "string"
+            and (.limits | type) == "array" and (.limits | length > 0)
+            and (all(.limits[]; (.label | type) == "string"
+              and (.percent | type) == "number" and .percent >= 0 and .percent <= 1
+              and ((.resetsAt | type) == "string" or .resetsAt == null)))
+            and .hasLocalStats == false
+            and .hasPromptStats == false
+            and .totalPrompts == 0
+            and .totalSessions == 0
+          ) then . else error("record is outside the native contract") end
+      ' <<<"$entry" >"$transformed" 2>"$WORK_DIR/$filename_id.jq-stderr"; then
+      # An empty metrics list is a normal provider state and has nothing the
+      # native panel can display; malformed candidates likewise stay unpublished.
+      continue
+    fi
+
+    if [ -n "${SEEN_FILENAMES[$filename_id]:-}" ]; then
+      say "$id: outro provider gerou o mesmo nome de arquivo; nenhum registro adicional foi publicado." >&2
+      continue
+    fi
+    SEEN_FILENAMES[$filename_id]=1
+
+    # Prefixing the filename avoids every target owned by Omarchy's updater.
+    # The fully validated file is copied to a same-filesystem temporary and mv
+    # is the sole destination operation, so readers can never observe a partial.
+    target="$USAGE_DIR/ezomar-ai-usagebar-$filename_id.json"
+    tmp="$(mktemp "$USAGE_DIR/.ezomar-ai-usagebar-$filename_id.XXXXXX")" || return 1
+    if ! chmod 0600 "$tmp" || ! cp -- "$transformed" "$tmp" || ! mv -f -- "$tmp" "$target"; then
+      rm -f -- "$tmp"
+      say "$id: não foi possível publicar o registro." >&2
+      return 1
+    fi
+    if [ -n "$account" ]; then
+      EXTRA_OWNERS["${target##*/}"]="$account"
+    else
+      DEFAULT_PUBLISHED["${target##*/}"]=1
+    fi
+    say "$(jq -r '.name' "$transformed") atualizado via ai-usagebar."
+  done < <(jq -c '.entries[] | select(type == "object")' "$source_json")
+}
+
+# Valida e publica um documento já coletado. Uma falha descarta só esta origem:
+# os registros que ela publicou antes continuam no painel, e as outras contas
+# seguem. A config padrão (ACCOUNT vazio) mantém as mensagens de sempre.
+publish_source() {
+  local account="$1" source_json="$2"
+
+  if ! jq -e 'type == "object" and (.entries | type == "array")' \
+    "$source_json" >/dev/null 2>&1; then
+    say "O backend ai-usagebar${account:+ (conta $account)} retornou JSON inválido; mantendo os últimos registros válidos." >&2
+    return 1
+  fi
+
+  publish_entries "$source_json" "$account"
+}
+
+# Roda o ai-usagebar de uma origem e publica o resultado.
+collect_source() {
+  local account="$1"
+  shift
+  local source_json="$WORK_DIR/usage${account:+-$account}.json"
+  local stderr_file="$WORK_DIR/usage-$account.stderr"
+
+  if [ -z "$account" ]; then
+    if ! "$@" >"$source_json"; then
+      say "O backend ai-usagebar falhou; mantendo os últimos registros válidos." >&2
+      return 1
+    fi
+  else
+    if ! "$@" >"$source_json" 2>"$stderr_file"; then
+      if grep -Fq 'no vendors enabled' "$stderr_file"; then
+        # Conta pausada com enabled = false: o `usage` do 1.26.0 sai 1 com
+        # "no vendors enabled", e repassar isso derrubaria o unit do systemd a
+        # cada tick por uma escolha deliberada. Pausada sai do painel na poda,
+        # como uma conta apagada, para a aba não ficar congelada.
+        ACCOUNT_STATE[$account]=paused
+        return 0
+      fi
+      cat -- "$stderr_file" >&2
+      say "O backend ai-usagebar (conta $account) falhou; mantendo os últimos registros válidos." >&2
+      return 1
+    fi
+    cat -- "$stderr_file" >&2
+  fi
+
+  publish_source "$account" "$source_json"
+}
+
+# Apaga a aba das contas extras que saíram de ACCOUNTS_DIR (arquivo apagado,
+# renomeado ou virado .toml.off) ou foram pausadas. Sem isto o painel mostraria
+# para sempre o último registro delas, congelado. Só o que uma conta extra
+# publicou passa por aqui: a config padrão guarda de propósito o último registro
+# válido quando um provider falha, e nunca é podada. Pelo mesmo motivo, uma conta
+# que ainda existe e só falhou nesta rodada mantém as abas.
+prune_accounts() {
+  local file owner dir tmp rc=0
+
+  if [ -f "$ACCOUNTS_STATE" ]; then
+    if [ ! -r "$ACCOUNTS_STATE" ]; then
+      say "Não consegui ler $ACCOUNTS_STATE; nenhuma aba de conta extra foi apagada." >&2
+      return 1
+    fi
+    while IFS=$'\t' read -r file owner; do
+      # O TSV é só desta ponte, mas uma linha estragada não pode virar rm de
+      # outro arquivo: só nomes que ela mesma publicaria, sem barra.
+      [[ "$file" =~ ^ezomar-ai-usagebar-[a-z0-9-]+\.json$ ]] || continue
+      [ -n "$owner" ] || continue
+      if [ -n "${EXTRA_OWNERS[$file]:-}" ] || [ -n "${DEFAULT_PUBLISHED[$file]:-}" ]; then
+        continue
+      fi
+      if [ "${ACCOUNT_STATE[$owner]:-}" = live ]; then
+        EXTRA_OWNERS[$file]="$owner"
+        continue
+      fi
+      if rm -f -- "$USAGE_DIR/$file"; then
+        say "Conta $owner removida ou pausada; $file apagado."
+      else
+        say "Conta $owner removida ou pausada, mas $file não pôde ser apagado." >&2
+        EXTRA_OWNERS[$file]="$owner"
+        rc=1
+      fi
+    done <"$ACCOUNTS_STATE"
+  fi
+
+  # Sem conta extra publicada, o estado some: uma máquina só com a config padrão
+  # não ganha arquivo nenhum em ~/.local/state/ezomar.
+  if [ "${#EXTRA_OWNERS[@]}" -eq 0 ]; then
+    if ! rm -f -- "$ACCOUNTS_STATE"; then
+      say "Não consegui apagar $ACCOUNTS_STATE." >&2
+      return 1
+    fi
+    return "$rc"
+  fi
+
+  dir="${ACCOUNTS_STATE%/*}"
+  mkdir -p -- "$dir" || return 1
+  tmp="$(mktemp "$dir/.ai-usagebar-accounts.XXXXXX")" || return 1
+  if ! for file in "${!EXTRA_OWNERS[@]}"; do
+      printf '%s\t%s\n' "$file" "${EXTRA_OWNERS[$file]}"
+    done | LC_ALL=C sort >"$tmp" || ! mv -f -- "$tmp" "$ACCOUNTS_STATE"; then
+    rm -f -- "$tmp"
+    say "Não consegui gravar $ACCOUNTS_STATE." >&2
+    return 1
+  fi
+  return "$rc"
+}
+
+# O payload de --from-file substitui a coleta ao vivo inteira. Rodar as contas
+# extras junto chamaria o backend de verdade num ensaio que promete não usar
+# chave nenhuma.
+if [ -z "$FROM_FILE" ] && [ -d "$ACCOUNTS_DIR" ]; then
+  for config in "$ACCOUNTS_DIR"/*.toml; do
+    if [ -f "$config" ]; then
+      EXTRA_CONFIGS+=("$config")
+    fi
+  done
+fi
+
 # Missing configuration and binaries are expected before private dotfiles and
 # credentials arrive, so the periodic service must remain successfully quiet.
+# Uma conta extra basta para rodar mesmo sem a config padrão, e um estado com
+# abas de contas extras também: senão, numa máquina sem config padrão, apagar a
+# última conta extra deixaria a aba dela no painel para sempre.
 if [ -z "$FROM_FILE" ]; then
-  if [ ! -f "$CONFIG_FILE" ] || ! command -v "$AI_USAGEBAR_BIN" >/dev/null 2>&1; then
+  if ! command -v "$AI_USAGEBAR_BIN" >/dev/null 2>&1 \
+    || { [ ! -f "$CONFIG_FILE" ] && [ "${#EXTRA_CONFIGS[@]}" -eq 0 ] \
+      && [ ! -s "$ACCOUNTS_STATE" ]; }; then
     exit 0
   fi
 elif [ ! -f "$FROM_FILE" ]; then
@@ -64,122 +356,61 @@ elif [ ! -f "$FROM_FILE" ]; then
   exit 1
 fi
 
+# Com EZOMAR_AI_USAGEBAR_CONFIG, a ponte decidiu rodar por causa daquele
+# arquivo, então o binário tem de ler o mesmo. Sem ela, a chamada fica igual à de
+# sempre e o ai-usagebar acha a config padrão sozinho.
+if [ -n "${EZOMAR_AI_USAGEBAR_CONFIG:-}" ]; then
+  DEFAULT_ARGS=(--config "$CONFIG_FILE")
+fi
+
+# Uma conta extra só deve enxergar a própria config. Sem isto ela herdaria do
+# serviço as chaves da conta padrão (KIMI_API_KEY, MOONSHOT_API_KEY e as outras
+# *_API_KEY), e o isolamento dependeria de cada arquivo lembrar de
+# api_key_env = "". Os nomes fora do padrão *_API_KEY são as outras credenciais
+# que o ai-usagebar 1.26.0 lê do ambiente. PATH, HOME e o resto seguem iguais.
+while IFS= read -r name; do
+  case "$name" in
+    *_API_KEY|ANTHROPIC_ADMIN_KEY|XAI_MANAGEMENT_KEY|GITHUB_COPILOT_TOKEN|GH_TOKEN|GITHUB_TOKEN)
+      SCRUB_ENV+=(-u "$name")
+      ;;
+  esac
+done < <(compgen -e)
+
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ezomar-ai-usagebar.XXXXXX")"
-SOURCE_JSON="$WORK_DIR/usage.json"
 if [ -n "$FROM_FILE" ]; then
-  cp -- "$FROM_FILE" "$SOURCE_JSON"
-elif ! "$AI_USAGEBAR_BIN" usage --json >"$SOURCE_JSON"; then
-  say "O backend ai-usagebar falhou; mantendo os últimos registros válidos." >&2
-  exit 1
+  # cp, como antes das contas extras: um payload ilegível é erro do ensaio, com
+  # a mensagem do próprio cp, e não "o backend falhou". E "-" é um arquivo
+  # chamado "-", não a entrada padrão.
+  cp -- "$FROM_FILE" "$WORK_DIR/usage.json"
+  publish_source "" "$WORK_DIR/usage.json" || STATUS=1
+elif [ -f "$CONFIG_FILE" ]; then
+  collect_source "" "$AI_USAGEBAR_BIN" "${DEFAULT_ARGS[@]}" usage --json || STATUS=1
 fi
 
-if ! jq -e 'type == "object" and (.entries | type == "array")' \
-  "$SOURCE_JSON" >/dev/null 2>&1; then
-  say "O backend ai-usagebar retornou JSON inválido; mantendo os últimos registros válidos." >&2
-  exit 1
-fi
-
-mkdir -p "$USAGE_DIR"
-while IFS= read -r entry; do
-  id="$(jq -r 'if (.id | type) == "string" then .id else "" end' <<<"$entry")"
-  [ -n "$id" ] || continue
-
-  case "${id,,}" in
-    anthropic|openai)
-      # Module 65's native collectors provide authoritative per-account limits
-      # for these vendors, so an aggregate source would create misleading tabs.
+for config in "${EXTRA_CONFIGS[@]}"; do
+  account="$(basename -- "$config" .toml)"
+  case "$account" in
+    *[[:cntrl:]]*)
+      # Um TAB ou uma quebra de linha no nome estragaria o ACCOUNTS_STATE.
+      say "Conta extra ignorada: o nome de $config tem caractere de controle." >&2
+      STATUS=1
       continue
       ;;
   esac
+  ACCOUNT_STATE[$account]=live
+  # O `usage` recusa --cache-dir (conferido no ai-usagebar 1.26.0), e sem cache
+  # próprio as duas contas dividiriam ~/.cache/ai-usagebar/kimi/usage.json: o
+  # snapshot de uma conta apareceria sob a outra. O ai-usagebar respeita
+  # XDG_CACHE_HOME e cria a pasta sozinho.
+  collect_source "$account" \
+    env "${SCRUB_ENV[@]}" \
+    XDG_CACHE_HOME="${XDG_CACHE_HOME:-$REAL_HOME/.cache}/ai-usagebar-accounts/$account" \
+    "$AI_USAGEBAR_BIN" --config "$config" usage --json || STATUS=1
+done
 
-  has_error="$(jq -r '.error != null' <<<"$entry")"
-  if [ "$has_error" = true ]; then
-    error="$(jq -r 'if (.error | tostring) == "" then "erro sem detalhes" else (.error | tostring) end' <<<"$entry")"
-    say "$id: $error; mantendo o último registro válido." >&2
-    continue
-  fi
+# O ensaio com --from-file não sabe nada das contas extras, então não apaga aba.
+if [ -z "$FROM_FILE" ]; then
+  prune_accounts || STATUS=1
+fi
 
-  filename_id="$(printf '%s' "$id" \
-    | tr '[:upper:]_' '[:lower:]-' \
-    | sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-//; s/-$//')"
-  [ -n "$filename_id" ] || continue
-  transformed="$WORK_DIR/$filename_id.json"
-  now="$(date --utc +'%Y-%m-%dT%H:%M:%SZ')"
-  if ! jq -ce --arg now "$now" '
-      {
-        schemaVersion: 1,
-        id: .id,
-        name: (if (.display_name | type) == "string" and .display_name != "" then .display_name else .id end),
-        updatedAt: (if (.fetched_at | type) == "string" and .fetched_at != "" then .fetched_at else $now end),
-        ready: true,
-        hasLocalStats: false,
-        hasPromptStats: false,
-        scope: "account",
-        tierLabel: (if (.plan | type) == "string" then .plan else "" end),
-        usageStatusText: "",
-        authHelpText: "",
-        limits: [
-          (.metrics // [])[]
-          | select(type == "object")
-          | select((.label | type) == "string" and .label != "" and (.percent | type) == "number")
-          | {
-              label: .label,
-              # Escala, e não cosmética: o contrato nativo guarda FRAÇÃO de 0 a 1
-              # (normalize_utilization devolve min(1.0, n/100.0), e o painel
-              # trata >= 0.9 como alarme), enquanto o ai-usagebar reporta 0 a
-              # 100, com o campo `value` dizendo "30%". Sem dividir, uma cota de
-              # 4% aparecia como 400% e pintava a barra inteira de vermelho.
-              percent: ([[.percent / 100, 0] | max, 1] | min),
-              resetsAt: (if (.reset_at | type) == "string" then .reset_at else null end)
-            }
-        ],
-        todayPrompts: 0,
-        todaySessions: 0,
-        todayTotalTokens: 0,
-        todayTokensByModel: {},
-        recentDays: [],
-        totalPrompts: 0,
-        totalSessions: 0,
-        activeDays: 0,
-        activeDates: [],
-        modelUsage: {}
-      }
-      | select(.limits | length > 0)
-      | if (
-          (.id | type) == "string" and .id != ""
-          and (.name | type) == "string"
-          and (.tierLabel | type) == "string"
-          and (.limits | type) == "array" and (.limits | length > 0)
-          and (all(.limits[]; (.label | type) == "string"
-            and (.percent | type) == "number" and .percent >= 0 and .percent <= 1
-            and ((.resetsAt | type) == "string" or .resetsAt == null)))
-          and .hasLocalStats == false
-          and .hasPromptStats == false
-          and .totalPrompts == 0
-          and .totalSessions == 0
-        ) then . else error("record is outside the native contract") end
-    ' <<<"$entry" >"$transformed" 2>"$WORK_DIR/$filename_id.jq-stderr"; then
-    # An empty metrics list is a normal provider state and has nothing the
-    # native panel can display; malformed candidates likewise stay unpublished.
-    continue
-  fi
-
-  if [ -n "${SEEN_FILENAMES[$filename_id]:-}" ]; then
-    say "$id: outro provider gerou o mesmo nome de arquivo; nenhum registro adicional foi publicado." >&2
-    continue
-  fi
-  SEEN_FILENAMES[$filename_id]=1
-
-  # Prefixing the filename avoids every target owned by Omarchy's updater.
-  # The fully validated file is copied to a same-filesystem temporary and mv
-  # is the sole destination operation, so readers can never observe a partial.
-  target="$USAGE_DIR/ezomar-ai-usagebar-$filename_id.json"
-  tmp="$(mktemp "$USAGE_DIR/.ezomar-ai-usagebar-$filename_id.XXXXXX")"
-  chmod 0600 "$tmp"
-  if ! cp -- "$transformed" "$tmp" || ! mv -f -- "$tmp" "$target"; then
-    rm -f -- "$tmp"
-    say "$id: não foi possível publicar o registro." >&2
-    exit 1
-  fi
-  say "$(jq -r '.name' "$transformed") atualizado via ai-usagebar."
-done < <(jq -c '.entries[] | select(type == "object")' "$SOURCE_JSON")
+exit "$STATUS"

@@ -288,6 +288,34 @@ qualquer outro provider configurado em abas nativas. Anthropic e OpenAI são
 ignorados nessa ponte porque os coletores do próprio Omarchy já entregam limites
 mais autoritativos por conta.
 
+Uma segunda conta Kimi precisa de uma segunda config, porque o ai-usagebar só
+aceita uma seção `[kimi]` por arquivo. Cada `~/.config/ai-usagebar/accounts/NOME.toml`
+é uma conta extra (modelo em
+`install/templates/agent-usage-accounts/account.example.toml`): a ponte roda
+`ai-usagebar --config NOME.toml usage --json` para cada uma e publica os
+registros como `<id>-NOME`, então a conta `personal` vira a aba
+"Kimi · personal" ao lado da "Kimi" padrão. Cada conta roda com
+`XDG_CACHE_HOME=~/.cache/ai-usagebar-accounts/NOME`, porque o `usage` recusa
+`--cache-dir` e, sem isso, as duas contas dividiriam o mesmo snapshot em
+`~/.cache/ai-usagebar/kimi/usage.json`. Uma conta que falha só loga e deixa as
+outras publicarem. Esses arquivos carregam chave e ficam fora deste repo, como o
+`config.toml`.
+
+A conta extra roda sem as variáveis `*_API_KEY` do ambiente, para não herdar a
+chave da conta padrão. O modelo já vem com `credentials_path` apontando para um
+caminho impossível: sem isso, uma cópia com `api_key` vazio cairia no login do
+kimi CLI, que é o da conta padrão, e a aba nova mostraria a cota da outra conta
+sem erro nenhum. Para pausar uma conta, renomeie o arquivo para `NOME.toml.off`;
+a ponte pula a conta sem falhar o timer. `enabled = false` no `[kimi]` só pausa
+se todos os outros providers do arquivo também estiverem desligados, como no
+exemplo; com algum ligado, a aba do Kimi fica congelada. Conta pausada, apagada
+ou renomeada perde a aba na rodada seguinte: a ponte guarda em
+`~/.local/state/ezomar/ai-usagebar-accounts.tsv` qual conta publicou cada
+arquivo e apaga os que ficaram sem dono. Os registros da config
+padrão nunca passam por essa poda. `NOME` não deve repetir o rótulo de uma conta
+nomeada do ai-usagebar, porque `kimi@personal` e a conta `personal` gerariam o
+mesmo arquivo.
+
 O painel tem um limite prático que vale saber antes de jogar sete contas nele: a
 fileira de abas é um `Row` que divide a largura igualmente entre os providers
 (`Panel.qml:467`), sem quebra de linha e sem rolagem, então cada aba a mais
@@ -311,7 +339,11 @@ subscription que só expõe quota aparece normalmente. Para testar a ponte sem
 chaves reais, rode
 `ezomar-agent-usage-ai-usagebar --from-file /caminho/payload.json` ou defina
 `EZOMAR_AI_USAGEBAR_FROM_FILE` com o mesmo caminho. `XDG_STATE_HOME` pode apontar
-para um diretório temporário durante o ensaio.
+para um diretório temporário durante o ensaio. Esse modo publica só o payload,
+não roda as contas extras e não apaga aba de nenhuma delas. Para ensaiar as
+contas, `tests/ai-usagebar-bridge.sh`
+usa um binário falso via `EZOMAR_AI_USAGEBAR_BIN`, e
+`EZOMAR_AI_USAGEBAR_ACCOUNTS_DIR` troca a pasta das contas.
 
 ## Aresta conhecida: `.claude/settings.json`
 
