@@ -89,15 +89,25 @@ collect_profile() {
       return
     fi
   else
-    if ! HOME="$account_root/home" \
-      XDG_CACHE_HOME="$account_root/cache" \
-      XDG_DATA_HOME="$account_root/data" \
-      CODEX_HOME="$profile_dir" \
-      "$collector" >"$raw" 2>"$WORK_DIR/$id.stderr"; then
-      say "$vendor_name · $profile: o coletor falhou; mantendo o último registro válido." >&2
-      STATUS=1
-      return
-    fi
+    # O coletor do Omarchy dá 4s a cada RPC do app-server, e a conta exato
+    # respondeu o account/read em 2,3s, 4,6s, 4,6s e mais de 8s em quatro
+    # rodadas seguidas (02/10/2026): depende da rede até a OpenAI naquele
+    # instante. O timeout volta como registro sem limites e com o nome do RPC
+    # no authHelpText, então vale tentar de novo antes de desistir. Três
+    # tentativas custam no máximo uns 30s num timer de 15 minutos.
+    for _ in 1 2 3; do
+      if ! HOME="$account_root/home" \
+        XDG_CACHE_HOME="$account_root/cache" \
+        XDG_DATA_HOME="$account_root/data" \
+        CODEX_HOME="$profile_dir" \
+        "$collector" >"$raw" 2>"$WORK_DIR/$id.stderr"; then
+        say "$vendor_name · $profile: o coletor falhou; mantendo o último registro válido." >&2
+        STATUS=1
+        return
+      fi
+      jq -e '(.limits | length) == 0 and ((.authHelpText // "") | test("^account/"))' \
+        "$raw" >/dev/null 2>&1 || break
+    done
   fi
 
   # Custom IDs make the panel create one tab per account, but the plugin only
@@ -134,6 +144,21 @@ collect_profile() {
   # expose a partial JSON record to the panel.
   WRITTEN_IDS+=("$id")
   target="$USAGE_DIR/$id.json"
+
+  # Um timeout do app-server do Codex não é falha do coletor: ele sai com 0 e
+  # entrega um registro sem limite nenhum, com o nome do RPC que estourou os 4s
+  # no authHelpText ("account/read", "account/rateLimits/read"). Publicar isso
+  # trocava a aba boa por uma vazia. Visto na conta exato em 02/10/2026: o
+  # account/read levava 4,6s em toda rodada, e a aba ficava em branco. Nesse
+  # caso fica o último registro com números. Logout de verdade traz outro texto
+  # no authHelpText e continua sendo publicado, para o aviso de login aparecer.
+  if [ "$vendor" = codex ] && [ -s "$target" ] \
+    && jq -e '(.limits | length) == 0 and ((.authHelpText // "") | test("^account/"))' \
+      "$transformed" >/dev/null 2>&1 \
+    && jq -e '(.limits | length) > 0' "$target" >/dev/null 2>&1; then
+    say "$name: o Codex não respondeu a tempo ($(jq -r '.authHelpText' "$transformed")); mantendo o último registro válido." >&2
+    return
+  fi
   tmp="$(mktemp "$USAGE_DIR/.$id.XXXXXX")"
   chmod 0600 "$tmp"
   if ! cp -- "$transformed" "$tmp" || ! mv -f -- "$tmp" "$target"; then
