@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ff — busca de arquivos
+Comment=Everything-style: plocate + fd ao vivo, Enter mostra o arquivo na pasta
+Exec=omarchy-launch-tui --app-id=org.omarchy.ff ff
+Icon=system-search
+Terminal=false
+Categories=Utility;FileTools;
+Keywords=arquivo;arquivos;find;buscar;busca;localizar;procurar;everything;plocate;locate;ff;

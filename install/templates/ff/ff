@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# ff — Everything-style file finder: plocate + fd ao vivo + fzf, Enter mostra o
+# arquivo na pasta, no gerenciador de arquivos padrão.
+#
+# Nasceu na máquina Fedora em 07/08/2026 e ficou só no ~/.local/bin dela, sem
+# repositório; depois do format foi achado no espelho do kage. Por isso agora
+# mora aqui. As medidas abaixo são daquela máquina, salvo onde diz outra coisa.
+#
+# Duas camadas, porque uma nao basta:
+#   1. plocate  disco todo, ~6ms, mas so sabe do ultimo updatedb (1x/dia)
+#   2. fd       $HOME ao vivo, ~400ms, cobre o que nasceu depois do indice
+# O resultado do plocate sai na hora e o do fd emenda por cima, streamando dentro
+# do mesmo reload do fzf. Medido: primeira linha em 6ms, processo fecha em 443ms.
+#
+# Por que plocate e nao Baloo: o Baloo indexa CONTEUDO e nesta maquina ha 1,09
+# milhao de arquivos, dos quais ~528 GB sao saida de compilacao. Ele esta com 339
+# arquivos indexados de proposito. O plocate indexa so NOME e resolve 412 hits em
+# 10ms, que e a velocidade que faz a busca parecer instantanea.
+#
+# Teclas dentro do finder:
+#   Enter     abre a pasta com o arquivo selecionado (Flea, Nautilus...)
+#   Ctrl-O    abre o arquivo em si (xdg-open)
+#   Ctrl-Y    copia o caminho pro clipboard
+#   Ctrl-T    liga/desliga o filtro de lixo de build
+#   Ctrl-H    liga/desliga resultados fora do /home
+#   Esc       sai
+#
+# Uso: ff [termo inicial]
+
+set -uo pipefail
+
+LIMIT="${FF_LIMIT:-3000}"        # quantos resultados o fzf recebe
+
+# --- camada ao vivo -----------------------------------------------------------
+# O plocate roda de timer (1x/dia), entao arquivo criado depois do ultimo
+# updatedb simplesmente nao existe para ele. Isso quebra justamente o caso de uso
+# principal: o agente acabou de gerar um arquivo e eu quero achar. Foi o que
+# aconteceu com bureaus_viabilidade.csv, criado 16h depois do indice.
+#
+# O Everything no Windows nao tem esse problema porque le o journal do NTFS e
+# sabe da criacao na hora. No Linux nao existe equivalente barato: inotify
+# precisaria de um watch por diretorio, e aqui sao 1,09 milhao de arquivos.
+#
+# Solucao: depois do plocate, varrer $HOME ao vivo com fd e emendar o que faltou.
+# Medido nesta maquina: /home inteiro em 382ms com o lixo podado e 8 threads
+# (0.7s sem podar). Como o fzf mata o reload anterior a cada tecla, esse custo so
+# se paga quando voce para de digitar.
+LIVE_JOBS="${FF_LIVE_JOBS:-8}"   # 8 de 32 threads: nao rouba a maquina dos agentes
+LIVE_MIN="${FF_LIVE_MIN:-3}"     # abaixo disso a query e vaga e a varredura e desperdicio
+LIVE_TIMEOUT="${FF_LIVE_TIMEOUT:-6}"
+# /tmp entra explicito porque o updatedb poda ele (PRUNEPATHS), e e onde os
+# agentes escrevem scratchpad. O diretorio leva o uid, entao nao e fixo.
+LIVE_ROOTS=("$HOME" "/tmp/claude-$(id -u)")
+# Os dois primeiros precisam do `**/` para ancorar: o --exclude do fd nao casa
+# padrao de dois niveis sem ele. Medido: com `bin/Debug` vazam 191.617 caminhos,
+# com `**/bin/Debug` vazam 0.
+#
+# Os caches no fim da lista sao podados aqui mas nao no NOISE, ou seja o plocate
+# ainda mostra o que ha neles. E de proposito: a camada ao vivo existe so para
+# achar arquivo RECEM criado, e ninguem procura um arquivo novo dentro de
+# ~/.cargo. Poupa caminhada sem esconder nada.
+#
+# `*--worktrees` sao as worktrees dos agentes (repo--worktrees/<tarefa>), cada uma
+# uma copia inteira do repositorio. Medido no takidesk em 01/10/2026: so a
+# mantis--worktrees somava ~16 milhoes de entradas, e a varredura completa da home
+# levava 74s; sem elas a camada ao vivo nao chega nem perto do teto.
+LIVE_PRUNE=('**/bin/Debug' '**/bin/Release' '*--worktrees'
+            node_modules obj target .git .venv __pycache__ .next dist build
+            .cache .cargo .rustup .nuget .npm)
+# Quantos o plocate devolve ANTES do filtro. Medido nesta maquina com a query
+# patologica "index.js": 5k=80ms, 15k=200ms, 30k=414ms, 60k+=1.1s. A partir de
+# 15k o resultado ja satura o LIMIT de exibicao, entao subir mais so custa
+# latencia. Query normal ("kage-mirror") leva 5ms em qualquer valor.
+RAW_LIMIT="${FF_RAW_LIMIT:-15000}"
+STATE="${XDG_RUNTIME_DIR:-/tmp}/ff-state"
+
+# Lixo de build: sem isso uma busca por "*.dll" ou "Program.cs" devolve milhares
+# de copias dentro de bin/ e obj/ e o resultado util fica invisivel.
+#
+# `bin` e estreitado para Debug/Release de proposito. Banir todo diretorio chamado
+# bin escondia ~/.local/bin, que e onde vivem os scripts proprios (este ff, o dv,
+# o kage-mirror). Medido: dos 277.646 caminhos com /bin/, 186.774 sao
+# Debug/Release; os outros 90.872 sao executavel de verdade e devem aparecer.
+#
+# As worktrees dos agentes entram aqui pelo mesmo motivo: cada arquivo do repo
+# aparece uma vez por tarefa, e o original some no meio das copias.
+NOISE='/(obj|target|node_modules|\.venv|__pycache__|\.next|dist|build|\.git)/|/bin/(Debug|Release)/|/[^/]*--worktrees/'
+
+search() {
+  local q="$1" filter="$2" homeonly="$3" out
+  [ -z "$q" ] && return 0
+  # O limite do plocate e aplicado DEPOIS de filtrar, nao antes. Com 1,07 milhao
+  # de caminhos em node_modules no banco, pedir 3000 ao plocate e filtrar depois
+  # devolve um conjunto ja truncado onde o resultado util pode nem estar. Peco
+  # folgado, filtro, e so entao corto.
+  # Sem `|| return`: plocate sai com codigo != 0 quando nao acha nada, e abortar
+  # aqui mataria a camada ao vivo logo abaixo, que e justamente quem cobre o caso
+  # "nao achei nada". Era esse o bug.
+  out="$(plocate --ignore-case --limit "$RAW_LIMIT" -- "$q" 2>/dev/null || true)"
+  [ "$homeonly" = "1" ] && out="$(printf '%s\n' "$out" | grep -E "^$HOME/" || true)"
+  [ "$filter" = "1" ]   && out="$(printf '%s\n' "$out" | grep -Ev "$NOISE" || true)"
+  out="$(printf '%s\n' "$out" | grep -v '^$' | head -n "$LIMIT" || true)"
+  local nout=0
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+    nout=$(printf '%s\n' "$out" | grep -c . || true)
+  fi
+
+  # --- camada ao vivo: o que nasceu depois do ultimo updatedb ------------------
+  [ "${#q}" -ge "$LIVE_MIN" ] || return 0
+  # O teto e do TOTAL das duas camadas. Cada uma com seu head devolvia 2x LIMIT.
+  local rest=$(( LIMIT - nout ))
+  [ "$rest" -gt 0 ] || return 0
+  local ex=() r roots=()
+  if [ "$filter" = "1" ]; then
+    for p in "${LIVE_PRUNE[@]}"; do ex+=(--exclude "$p"); done
+  fi
+  for r in "${LIVE_ROOTS[@]}"; do [ -d "$r" ] && roots+=("$r"); done
+  [ "${#roots[@]}" -gt 0 ] || return 0
+
+  # -F trata a query como texto literal: um nome como "arquivo.v2(final).csv"
+  # quebraria a regex do fd. --full-path para casar do mesmo jeito que o plocate,
+  # que procura o trecho em qualquer parte do caminho.
+  # --one-file-system: um sshfs montado na home (o espelho do kage, ~/mnt) seria
+  # varrido pela rede. O updatedb tambem nao entra nele (PRUNEFS fuse.sshfs).
+  timeout "$LIVE_TIMEOUT" nice -n 10 \
+    fd -j "$LIVE_JOBS" -HI -F --full-path --one-file-system "${ex[@]}" -- "$q" "${roots[@]}" 2>/dev/null \
+    | { if [ -n "$out" ]; then grep -vFxf <(printf '%s\n' "$out"); else cat; fi; } \
+    | head -n "$rest" || true
+}
+
+# Chamado de volta por dentro do fzf, para o reload a cada tecla.
+if [ "${1:-}" = "--search" ]; then
+  f=1 h=1
+  [ -f "$STATE.noise" ] && f=0
+  [ -f "$STATE.allfs" ] && h=0
+  search "${2:-}" "$f" "$h"
+  exit 0
+fi
+
+if [ "${1:-}" = "--toggle" ]; then
+  case "$2" in
+    noise) [ -f "$STATE.noise" ] && rm -f "$STATE.noise" || : > "$STATE.noise" ;;
+    allfs) [ -f "$STATE.allfs" ] && rm -f "$STATE.allfs" || : > "$STATE.allfs" ;;
+  esac
+  exit 0
+fi
+
+command -v plocate >/dev/null || { echo "ff: plocate ausente" >&2; exit 1; }
+command -v fzf     >/dev/null || { echo "ff: fzf ausente" >&2; exit 1; }
+
+rm -f "$STATE.noise" "$STATE.allfs"
+SELF="$(readlink -f "$0")"
+QUERY="${*:-}"
+
+# As aspas simples do --preview e dos binds sao de proposito: quem expande e o fzf.
+# shellcheck disable=SC2016
+sel="$(
+  : | fzf \
+    --ansi --height=100% --layout=reverse --info=inline --border=none \
+    --prompt='ff> ' --query="$QUERY" \
+    --header=$'Enter mostra na pasta  |  C-o abrir  |  C-y copiar  |  C-t lixo de build  |  C-h fora do /home' \
+    --preview='p={}; if [ -d "$p" ]; then echo "[dir] $p"; ls -la --color=always "$p" 2>/dev/null | head -40; else stat -c "%s bytes   %y" "$p" 2>/dev/null; echo; file -b "$p" 2>/dev/null; echo; head -c 2000 "$p" 2>/dev/null | strings | head -40; fi' \
+    --preview-window='right,55%,border-left' \
+    --bind "start:reload($SELF --search {q})" \
+    --bind "change:reload($SELF --search {q})" \
+    --bind "ctrl-t:execute-silent($SELF --toggle noise)+reload($SELF --search {q})" \
+    --bind "ctrl-h:execute-silent($SELF --toggle allfs)+reload($SELF --search {q})" \
+    --bind 'ctrl-y:execute-silent(printf %s {} | wl-copy 2>/dev/null || printf %s {} | xclip -selection clipboard)+abort' \
+    --bind 'ctrl-o:execute-silent(systemd-run --user --collect xdg-open {} >/dev/null 2>&1 || setsid xdg-open {} >/dev/null 2>&1 &)+abort'
+)" || exit 0
+
+[ -z "$sel" ] && exit 0
+
+# --- Enter: cair na pasta com o arquivo marcado -------------------------------
+# NAO lancar o gerenciador com `setsid ... &` aqui. Quando o fzf sai, este script
+# termina e o terminal fecha a janela, e o gerenciador morre junto antes de chegar
+# a aparecer: a janela pisca e nada abre (medido no Fedora, com Dolphin e kitty). Medido no cenario que reproduz a falha (terminal
+# morrendo 1s depois do lancamento): setsid deixa 0 processos vivos, systemd-run
+# deixa 1, D-Bus deixa 1.
+#
+# O jeito certo e pedir por D-Bus. O org.freedesktop.FileManager1 e ativavel (no
+# Omarchy, pelo Nautilus ou, depois de `flea --default`, pelo Flea), entao quem
+# sobe o gerenciador e o systemd e o processo nao tem vinculo nenhum com a vida
+# deste script. E a interface padrao do freedesktop para "revelar no
+# gerenciador", entao vale para qualquer um.
+
+# Percent-encoding do caminho. Precisa ser correto: nomes daqui tem acento e o
+# arquivo de lock do LibreOffice termina em '#', que numa URI e delimitador de
+# fragmento e truncaria o caminho. LC_ALL=C para iterar BYTE e nao caractere,
+# senao UTF-8 sai codificado errado. Confere com urllib.parse.quote em acento,
+# espaco, '#', '&', '(', ')' e '+'.
+url_encode() {
+  local LC_ALL=C s="$1" out='' i c h
+  for (( i=0; i<${#s}; i++ )); do
+    c=${s:i:1}
+    case $c in
+      [a-zA-Z0-9/._~-]) out+=$c ;;
+      *) printf -v h '%%%02X' "'$c"; out+=$h ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+if [ -d "$sel" ]; then method=ShowFolders; else method=ShowItems; fi
+busctl --user call org.freedesktop.FileManager1 /org/freedesktop/FileManager1 \
+  org.freedesktop.FileManager1 "$method" ass 1 "file://$(url_encode "$sel")" "" \
+  >/dev/null 2>&1 && exit 0
+
+# Sem FileManager1: abre a pasta pelo handler de inode/directory, numa unidade
+# transitoria do systemd, que sobrevive ao terminal fechando. --collect limpa a
+# unidade depois.
+dir="$sel"; [ -d "$sel" ] || dir="$(dirname "$sel")"
+systemd-run --user --collect xdg-open "$dir" >/dev/null 2>&1 && exit 0
+
+# Ultimo recurso.
+setsid xdg-open "$dir" >/dev/null 2>&1 &
