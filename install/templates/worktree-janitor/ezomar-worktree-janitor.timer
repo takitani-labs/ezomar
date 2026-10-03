@@ -1,0 +1,14 @@
+[Unit]
+Description=Run ezomar-worktree-janitor every 6 hours
+
+[Timer]
+# Monotônico e sem Persistent=: depois de um resume o timer não dispara antes
+# de a rede voltar.
+OnBootSec=30min
+OnUnitActiveSec=6h
+RandomizedDelaySec=15min
+AccuracySec=5min
+Unit=ezomar-worktree-janitor.service
+
+[Install]
+WantedBy=timers.target

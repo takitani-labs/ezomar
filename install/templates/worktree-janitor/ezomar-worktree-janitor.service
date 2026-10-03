@@ -1,0 +1,33 @@
+[Unit]
+Description=Remove merged git worktrees under ~/work/repos and the idle Codex daemons pinning them
+OnFailure=ezomar-worktree-janitor-failure.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+# Sem rede o fetch falha em todo repositório; melhor pular a rodada do que
+# marcar falha a cada resume. timeout devolve 124, que o ExecCondition trata
+# como "não rodar".
+ExecCondition=/usr/bin/timeout 90 /bin/sh -c 'until getent ahosts github.com >/dev/null; do sleep 5; done'
+ExecStart=/usr/bin/python3 %h/.local/bin/ezomar-worktree-janitor
+# A sessão de usuário do systemd não tem ssh-agent nem terminal. As chaves de
+# ~/.ssh sem passphrase bastam; BatchMode faz uma chave que pedisse senha falhar
+# na hora em vez de pendurar a rodada.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=GIT_TERMINAL_PROMPT=0
+Environment=GIT_OPTIONAL_LOCKS=0
+Environment="GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+# Cada fetch dispara um "git maintenance run --auto" destacado, que o systemd
+# mataria no fim do oneshot.
+Environment=GIT_CONFIG_COUNT=1
+Environment=GIT_CONFIG_KEY_0=maintenance.auto
+Environment=GIT_CONFIG_VALUE_0=false
+Nice=10
+CPUWeight=20
+# Ler os transcripts dos agentes (centenas de MB cada) enche o page cache; sem
+# teto a primeira rodada passou de 13 GB.
+MemoryHigh=4G
+TimeoutStartSec=2h
+KillMode=mixed
+TimeoutStopSec=5min

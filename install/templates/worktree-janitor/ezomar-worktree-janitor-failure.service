@@ -1,0 +1,6 @@
+[Unit]
+Description=Notify that ezomar-worktree-janitor failed
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'notify-send -u critical -a worktree-janitor "worktree-janitor falhou" "$(journalctl --user -u ezomar-worktree-janitor.service -n 6 -o cat --no-pager | tail -c 400)"'

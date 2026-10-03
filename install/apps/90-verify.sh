@@ -138,6 +138,9 @@ else
 fi
 
 echo "[ezomar][verify] Resiliência"
+# Sem o janitor as worktrees dos agentes voltam a encher o disco em dias.
+systemctl --user is-active ezomar-worktree-janitor.timer >/dev/null 2>&1 \
+  && ok "ezomar-worktree-janitor.timer ativo" || bad "ezomar-worktree-janitor.timer inativo (módulo 79)"
 # O teto de inodes do /tmp é o limite que ninguém olha até ele parar a máquina:
 # num tmpfs cheio de arquivo pequeno o espaço sobra e o inode acaba, e aí nada
 # consegue criar arquivo, nem o mount.cifs de um NAS. Medido aqui em 2026-08-29.

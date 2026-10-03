@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Remove git worktrees whose work already landed, and the idle Codex daemons that pin them.
+
+Runs unattended from a systemd user timer. A worktree is removed only when ALL hold:
+  - its HEAD is in origin's default branch (ancestor, or merging it changes nothing);
+  - it has no tracked changes, and git answered every check (a failing git call skips);
+  - it is not locked and has no other worktree nested inside it;
+  - if it never made a commit of its own, it holds no new files;
+  - nothing touched it for IDLE_HOURS: HEAD commit, any file outside caches, its index/HEAD;
+  - no herdr pane sits in it, and no Claude/Codex/Grok transcript written in the last
+    IDLE_HOURS mentions its path (agents keep their cwd elsewhere and come back days later);
+  - no process has its cwd inside it, except an idle Codex plugin daemon (app-server-broker)
+    with no task running, which is stopped first.
+Interactive agents are never stopped. Untracked AND ignored files (minus caches) go to a
+tarball in the graveyard first; above IGNORED_CAP_MB the worktree is kept instead. Every
+removal is appended to a JSONL manifest (fsynced) with the branch SHA, so
+`git branch <name> <sha>` restores it. Exit status 1 when anything errored.
+
+Usage: ezomar-worktree-janitor [--dry-run] [--root DIR ...]
+
+Environment (mostly for tests): EZOMAR_JANITOR_ROOTS (colon-separated, default ~/work/repos),
+EZOMAR_JANITOR_GRAVE (default ~/work/repos/.worktree-graveyard), EZOMAR_JANITOR_IDLE_HOURS (72),
+EZOMAR_JANITOR_TRANSCRIPTS (colon-separated globs; empty disables the transcript signal),
+EZOMAR_JANITOR_NO_HERDR=1 (skip the herdr pane signal).
+"""
+import argparse, fcntl, glob, hashlib, json, mmap, os, signal, subprocess, sys, tarfile, time
+from datetime import datetime, timezone
+
+IDLE_HOURS = float(os.environ.get("EZOMAR_JANITOR_IDLE_HOURS", "72"))
+BRANCH_KEEP_HOURS = max(IDLE_HOURS, 24)
+BROKER_IDLE_SECONDS = 15
+IGNORED_CAP_MB = 200
+GRAVE_ROOT = os.path.expanduser(os.environ.get("EZOMAR_JANITOR_GRAVE", "~/work/repos/.worktree-graveyard"))
+DEFAULT_ROOTS = [os.path.expanduser(r) for r in os.environ.get("EZOMAR_JANITOR_ROOTS", "~/work/repos").split(":") if r]
+PROTECTED_BRANCHES = {"main", "master", "develop", "dev", "uat", "staging", "production", "prod"}
+CACHE_PARTS = {".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".uv-cache", ".mypy_cache",
+               ".ruff_cache", "bin", "obj", "TestResults", "test-results", "proxy_cache", ".gradle", "target",
+               "dist", "build", ".next", ".turbo", ".cache"}
+CACHE_FILES = {".eslintcache", ".stylelintcache", ".DS_Store"}
+WALK_SKIP = CACHE_PARTS | {".git"}
+TRANSCRIPT_GLOBS = ["~/.claude/projects/*/*.jsonl", "~/.claude-profiles/*/projects/*/*.jsonl",
+                    "~/.claude/projects/*/*/subagents/**/*.jsonl",
+                    "~/.codex/sessions/**/*.jsonl", "~/.codex-profiles/*/sessions/**/*.jsonl",
+                    "~/.grok/**/*.jsonl", "~/.local/share/mantis-lanes/**/*.txt"]
+if "EZOMAR_JANITOR_TRANSCRIPTS" in os.environ:
+    TRANSCRIPT_GLOBS = [g for g in os.environ["EZOMAR_JANITOR_TRANSCRIPTS"].split(":") if g]
+BROKER_OK_CHILDREN = ("app-server-broker.mjs", "codex app-server", "codex-code-mode-host")
+HZ = os.sysconf("SC_CLK_TCK")
+GIT_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+STOP = False
+
+
+def log(msg):
+    print(f"{datetime.now().isoformat(timespec='seconds')} {msg}", flush=True)
+
+
+def git(cwd, *a, timeout=120):
+    try:
+        p = subprocess.run(["git", "-C", cwd, *a], capture_output=True, text=True, timeout=timeout, env=GIT_ENV)
+        return p.returncode, p.stdout.strip(), p.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
+
+
+def git_z(cwd, *a):
+    """NUL-separated listing; returns None when git fails (callers must skip)."""
+    try:
+        p = subprocess.run(["git", "-C", cwd, *a], capture_output=True, timeout=300, env=GIT_ENV)
+    except subprocess.TimeoutExpired:
+        return None
+    if p.returncode:
+        return None
+    return [x.decode(errors="surrogateescape") for x in p.stdout.split(b"\0") if x]
+
+
+# ---- discovery -------------------------------------------------------------------------
+
+def find_repos(roots):
+    out = []
+    for root in roots:
+        for dirpath, dirnames, _ in os.walk(root):
+            depth = dirpath[len(root):].count(os.sep)
+            if os.path.isdir(os.path.join(dirpath, ".git")):
+                out.append(dirpath)
+                dirnames[:] = []
+            elif depth >= 2:
+                dirnames[:] = []
+            else:
+                dirnames[:] = [d for d in dirnames if not d.startswith(".") and "--worktrees" not in d]
+    return out
+
+
+def linked_worktrees(repo):
+    _, out, _ = git(repo, "worktree", "list", "--porcelain")
+    items, cur = [], {}
+    for line in out.splitlines() + [""]:
+        if not line:
+            if cur:
+                items.append(cur)
+            cur = {}
+            continue
+        k, _, v = line.partition(" ")
+        cur[k] = v or True
+    return items[1:]
+
+
+def admin_dir(path):
+    try:
+        line = open(os.path.join(path, ".git")).read().strip()
+        return line.split("gitdir:", 1)[1].strip() if line.startswith("gitdir:") else None
+    except OSError:
+        return None
+
+
+def herdr_pane_dirs():
+    if os.environ.get("EZOMAR_JANITOR_NO_HERDR"):
+        return set()
+    try:
+        p = subprocess.run(["herdr", "pane", "list"], capture_output=True, text=True, timeout=30)
+        dirs = set()
+        for line in p.stdout.splitlines():
+            if not line.strip().startswith("{"):
+                continue
+            for pane in json.loads(line).get("result", {}).get("panes", []):
+                for k in ("cwd", "foreground_cwd"):
+                    if pane.get(k):
+                        dirs.add(os.path.realpath(pane[k]))
+        return dirs
+    except Exception:
+        return set()
+
+
+def mentioned_paths(paths, window_hours):
+    """Paths that appear in any agent transcript or lane note written within the window."""
+    if not paths:
+        return set()
+    cutoff = time.time() - window_hours * 3600
+    seen, files = set(), []
+    for g in TRANSCRIPT_GLOBS:
+        for f in glob.glob(os.path.expanduser(g), recursive=True):
+            try:
+                if os.path.getmtime(f) < cutoff:
+                    continue
+                rp = os.path.realpath(f)
+            except OSError:
+                continue
+            if rp not in seen:
+                seen.add(rp)
+                files.append(rp)
+    # Only usage contexts count. A bare path also shows up in `git worktree list` output, and
+    # one listing would then pin every worktree in the repo for the whole window.
+    prefixes = [b"cd ", b"-C ", b"--cwd ", b"--cwd=", b'"cwd":"', b'"cwd": "', b'"workdir":"', b'"workdir": "',
+                b"sandbox-policy-cwd ", b"--command-cwd ", b"pushd "]
+    needles = {p: [pre + p.encode() for pre in prefixes] for p in paths}
+    word = set(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
+
+    def found(mm, n):
+        i = mm.find(n)
+        while i != -1:
+            j = i + len(n)
+            if j >= len(mm) or mm[j] not in word:  # not a prefix of a longer sibling name
+                return True
+            i = mm.find(n, i + 1)
+        return False
+
+    hit = set()
+    for f in files:
+        try:
+            with open(f, "rb") as fh:
+                if os.fstat(fh.fileno()).st_size == 0:
+                    continue
+                mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+                for p, ns in needles.items():
+                    if p not in hit and any(found(mm, n) for n in ns):
+                        hit.add(p)
+                mm.close()
+        except (OSError, ValueError):
+            continue
+        if len(hit) == len(paths):
+            break
+    return hit
+
+
+# ---- processes -------------------------------------------------------------------------
+
+def proc_table():
+    t = {}
+    for p in os.listdir("/proc"):
+        if not p.isdigit():
+            continue
+        try:
+            s = open(f"/proc/{p}/stat").read().rsplit(")", 1)[1].split()
+            t[int(p)] = {"ppid": int(s[1]), "cwd": os.readlink(f"/proc/{p}/cwd"),
+                         "cmd": open(f"/proc/{p}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")}
+        except Exception:
+            pass
+    return t
+
+
+def subtree(table, root):
+    kids = {}
+    for p, i in table.items():
+        kids.setdefault(i["ppid"], []).append(p)
+    out, stack = [], [root]
+    while stack:
+        p = stack.pop()
+        out.append(p)
+        stack.extend(kids.get(p, []))
+    return out
+
+
+def tree_cpu(pids):
+    tot = 0.0
+    for p in pids:
+        try:
+            s = open(f"/proc/{p}/stat").read().rsplit(")", 1)[1].split()
+            tot += (int(s[11]) + int(s[12])) / HZ
+        except Exception:
+            pass
+    return tot
+
+
+def pins(path):
+    """Fresh snapshot: (broker trees, other pids) with cwd inside path."""
+    table = proc_table()
+    inside = {p for p, i in table.items() if i["cwd"] == path or i["cwd"].startswith(path + "/")}
+    brokers, covered = [], set()
+    for p in inside:
+        if "app-server-broker.mjs" in table[p]["cmd"]:
+            tree = subtree(table, p)
+            brokers.append((p, tree, [table[q]["cmd"] for q in tree if q in table]))
+            covered.update(tree)
+    return brokers, sorted(inside - covered), table
+
+
+# ---- checks ----------------------------------------------------------------------------
+
+def last_activity(path, repo, head):
+    """Newest of: HEAD commit date, any file outside caches, the worktree's index/HEAD/logs."""
+    newest = 0.0
+    _, ct, _ = git(repo, "log", "-1", "--format=%ct", head)
+    if ct.isdigit():
+        newest = float(ct)
+    ad = admin_dir(path)
+    if ad:
+        for f in ("HEAD", "index", "logs/HEAD", "ORIG_HEAD"):
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(ad, f)))
+            except OSError:
+                pass
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if d not in WALK_SKIP]
+        for f in filenames:
+            try:
+                newest = max(newest, os.lstat(os.path.join(dirpath, f)).st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
+def merged(repo, head, ref):
+    if git(repo, "merge-base", "--is-ancestor", head, ref)[0] == 0:
+        return True
+    rc, mt, _ = git(repo, "merge-tree", "--write-tree", ref, head)
+    rc2, dtree, _ = git(repo, "rev-parse", f"{ref}^{{tree}}")
+    return rc == 0 and rc2 == 0 and bool(mt) and mt.splitlines()[0] == dtree
+
+
+def made_own_commit(path):
+    rc, out, _ = git(path, "reflog", "--format=%gs", "HEAD")
+    if rc:
+        return True  # unknown: do not take the "never committed" branch on a failed call
+    return any(l.startswith(("commit", "merge", "rebase", "cherry-pick", "pull", "am", "revert")) for l in out.splitlines())
+
+
+def is_cache(relpath):
+    parts = relpath.rstrip("/").split("/")
+    return parts[-1] in CACHE_FILES or any(p in CACHE_PARTS or p.endswith(".egg-info") for p in parts)
+
+
+def size_of(full):
+    if os.path.islink(full) or not os.path.isdir(full):
+        try:
+            return os.lstat(full).st_size
+        except OSError:
+            return 0
+    tot = 0
+    for dp, dn, fn in os.walk(full):
+        for f in fn:
+            try:
+                tot += os.lstat(os.path.join(dp, f)).st_size
+            except OSError:
+                pass
+    return tot
+
+
+def keep_list(path):
+    """Untracked + ignored non-cache entries, or None when git fails."""
+    un = git_z(path, "ls-files", "--others", "--exclude-standard", "--directory", "-z")
+    ig = git_z(path, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+    if un is None or ig is None:
+        return None
+    return sorted({e for e in un + ig if not is_cache(e)})
+
+
+# ---- main ------------------------------------------------------------------------------
+
+def main():
+    global STOP
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--root", action="append")
+    args = ap.parse_args()
+    dry = args.dry_run
+    os.makedirs(GRAVE_ROOT, exist_ok=True)
+    lock = open(os.path.join(GRAVE_ROOT, ".janitor.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("another janitor run holds the lock; exiting")
+        return 0
+    signal.signal(signal.SIGTERM, lambda *_: globals().__setitem__("STOP", True))
+
+    grave = os.path.join(GRAVE_ROOT, datetime.now().strftime("%Y-%m-%d"))
+    os.makedirs(grave, exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%dT%H%M%S")
+    man = os.path.join(grave, f"janitor-{run_id}{'-dryrun' if dry else ''}.jsonl")
+    mf = open(man, "a")
+    errors = 0
+
+    def emit(rec):
+        mf.write(json.dumps(rec) + "\n")
+        mf.flush()
+        os.fsync(mf.fileno())
+
+    log(f"start dry_run={dry} idle={IDLE_HOURS}h manifest={man}")
+    now = time.time()
+    repos = find_repos(args.root or DEFAULT_ROOTS)
+    per_repo = {r: linked_worktrees(r) for r in repos}
+    all_wt_paths = {wt["worktree"] for wts in per_repo.values() for wt in wts}
+
+    # phase 1: evaluate without touching anything
+    candidates, counts = [], {}
+    for repo, wts in per_repo.items():
+        if not wts or STOP:
+            continue
+        rc, default, _ = git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+        if rc or not default:
+            log(f"skip repo {repo}: no origin/HEAD")
+            continue
+        dname = default.split("/", 1)[1]
+        ref = f"refs/janitor/{dname}"
+        rc, _, err = git(repo, "fetch", "--quiet", "--no-auto-maintenance", "--no-write-fetch-head",
+                         "origin", f"+refs/heads/{dname}:{ref}", timeout=300)
+        if rc:
+            log(f"ERROR fetch {repo}: {err[-300:]}")
+            errors += 1
+            continue
+        if not dry:
+            git(repo, "worktree", "prune", "--expire", "3.months.ago")
+        for wt in wts:
+            path, head = wt["worktree"], wt.get("HEAD")
+            branch = (wt.get("branch") or "").replace("refs/heads/", "")
+            rec = {"repo": repo, "path": path, "branch": branch, "head": head, "default": dname}
+            why = None
+            try:
+                if not os.path.isdir(path):
+                    why = "missing dir"
+                elif wt.get("locked"):
+                    why = "locked"
+                elif any(o != path and o.startswith(path + "/") for o in all_wt_paths):
+                    why = "another worktree nested inside"
+                else:
+                    rc, st, _ = git(path, "status", "--porcelain", "--untracked-files=no")
+                    if rc:
+                        why = "git status failed"
+                    elif st:
+                        why = "tracked changes"
+                    elif not merged(repo, head, ref):
+                        why = "not merged"
+                    else:
+                        idle_h = (now - last_activity(path, repo, head)) / 3600
+                        rec["idle_hours"] = round(idle_h, 1)
+                        if idle_h < IDLE_HOURS:
+                            why = f"active in last {IDLE_HOURS}h"
+                        else:
+                            keep = keep_list(path)
+                            if keep is None:
+                                why = "git ls-files failed"
+                            elif keep and not made_own_commit(path):
+                                why = "never committed but holds new files"
+                            else:
+                                size = sum(size_of(os.path.join(path, e)) for e in keep)
+                                rec["keep_entries"], rec["keep_mb"] = keep[:50], round(size / 1e6, 1)
+                                if size > IGNORED_CAP_MB * 1e6:
+                                    why = f"untracked/ignored data {size/1e6:.0f} MB above cap"
+            except Exception as e:
+                why = f"error: {type(e).__name__}: {e}"[:200]
+                errors += 1
+            counts[why or "candidate"] = counts.get(why or "candidate", 0) + 1
+            if why:
+                rec["action"] = f"skip: {why}"
+                emit(rec)
+            else:
+                candidates.append(rec)
+
+    # phase 2: liveness signals outside the worktree itself
+    panes = herdr_pane_dirs()
+    talked = mentioned_paths({c["path"] for c in candidates}, IDLE_HOURS)
+    removed = 0
+    for rec in candidates:
+        if STOP:
+            log("SIGTERM: stopping before the next worktree")
+            break
+        path, repo, head, branch = rec["path"], rec["repo"], rec["head"], rec["branch"]
+        try:
+            if any(d == path or d.startswith(path + "/") for d in panes):
+                rec["action"] = "skip: herdr pane open in it"; emit(rec); continue
+            if path in talked:
+                rec["action"] = f"skip: mentioned by an agent transcript in last {IDLE_HOURS}h"; emit(rec); continue
+            brokers, others, table = pins(path)
+            if others:
+                rec["action"] = "skip: process inside"; emit(rec); continue
+            if brokers:
+                if any(not any(ok in c for ok in BROKER_OK_CHILDREN) for _, _, cmds in brokers for c in cmds):
+                    rec["action"] = "skip: codex daemon has a task running"; emit(rec); continue
+                before = {b: tree_cpu(t) for b, t, _ in brokers}
+                time.sleep(BROKER_IDLE_SECONDS)
+                if any(tree_cpu(t) - before[b] > 0.3 for b, t, _ in brokers):
+                    rec["action"] = "skip: codex daemon busy"; emit(rec); continue
+                rec["brokers_stopped"] = [b for b, _, _ in brokers]
+                if dry:
+                    rec["action"] = "would remove (after stopping idle codex daemon)"; emit(rec); removed += 1; continue
+                for _, tree, _ in brokers:
+                    for p in reversed(tree):
+                        try:
+                            os.kill(p, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                time.sleep(2)
+            elif dry:
+                rec["action"] = "would remove"; emit(rec); removed += 1; continue
+            # final re-check right before deleting
+            _, others, _ = pins(path)
+            rc, st, _ = git(path, "status", "--porcelain", "--untracked-files=no")
+            if others or rc or st or git(path, "rev-parse", "HEAD")[1] != head \
+                    or (now - last_activity(path, repo, head)) / 3600 < IDLE_HOURS:
+                rec["action"] = "skip: changed during run"; emit(rec); continue
+            keep = keep_list(path)
+            if keep is None:
+                rec["action"] = "skip: git ls-files failed"; emit(rec); continue
+            if keep:
+                tag = hashlib.sha1(path.encode()).hexdigest()[:8]
+                tname = os.path.join(grave, f"{os.path.basename(repo)}__{os.path.basename(path)}__{tag}__{run_id}.tar.gz")
+                with tarfile.open(tname, "x:gz") as tf:
+                    for e in keep:
+                        tf.add(os.path.join(path, e), arcname=e, recursive=True,
+                               filter=lambda ti: None if is_cache(ti.name) else ti)
+                rec["backup"] = tname
+            rc, _, err = git(repo, "worktree", "remove", "--force", path)
+            if rc:
+                rec["action"] = f"error: worktree remove failed: {err[:160]}"; errors += 1; emit(rec); continue
+            rec["action"] = "removed"
+            removed += 1
+            protected = branch in PROTECTED_BRANCHES or branch == rec["default"]
+            _, ct, _ = git(repo, "log", "-1", "--format=%ct", head)
+            if branch and not protected and ct.isdigit() and (now - float(ct)) / 3600 > BRANCH_KEEP_HOURS:
+                rc, _, err = git(repo, "branch", "-D", branch)
+                rec["branch_deleted"] = rc == 0
+                if rc:
+                    rec["branch_err"] = err[:160]; errors += 1
+            emit(rec)
+            log(f"removed {path} branch={branch} head={head} branch_deleted={rec.get('branch_deleted', False)} backup={rec.get('backup')}")
+        except Exception as e:
+            rec["action"] = f"error: {type(e).__name__}: {e}"[:200]
+            errors += 1
+            emit(rec)
+
+    log(f"done: {removed} {'would be ' if dry else ''}removed; evaluated={sum(counts.values())} "
+        f"skips={json.dumps({k: v for k, v in counts.items() if k != 'candidate'})} errors={errors}")
+    mf.close()
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

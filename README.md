@@ -97,6 +97,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `74-meeting-rig.sh` | linka o `mrig` desse repo e roda o setup dele (venv + modelo) |
 | `76-claude-auth-preflight.sh` | instala o unit que avisa de perfis deslogados antes do herdr subir |
 | `78-pw-keepalive.sh` | daemon que mantém as sessões do 1Password e Bitwarden vivas |
+| `79-worktree-janitor.sh` | timer de 6 em 6 horas que apaga as worktrees já mergeadas e paradas há 72h, e fecha o daemon do Codex que as prende; backup em `~/work/repos/.worktree-graveyard` |
 | `80-oom-guard.sh` | sysrq e reserva de root; os limites de cgroup são opt-in |
 | `81-sudoless-docker.sh` | põe o usuário no grupo `docker` (root sem senha, ao contrário do padrão do Omarchy); `EZOMAR_SUDOLESS_DOCKER=false` desliga |
 | `82-watchdog.sh` | opt-in: arma o watchdog de hardware em 60s |
