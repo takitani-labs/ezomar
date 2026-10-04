@@ -80,6 +80,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `46-flea.sh` | instala o Flea da release do GitHub (`flea-bin`) e o torna o gerenciador de arquivos padrão (pastas, diálogos de arquivo, Super+Shift+F) |
 | `48-ff.sh` | instala o `ff`, busca de arquivos estilo Everything (plocate + fd ao vivo + fzf), no Super+Shift+Espaço |
 | `50-personal.sh` | roda seus módulos privados, se houver |
+| `51-gaze.sh` | instala o Gaze (reconhecimento facial) no lock do Omarchy e no sudo, pelo instalador oficial |
 | `56-herdr.sh` | instala o herdr pelo instalador oficial e habilita o unit, se os dotfiles o trouxeram |
 | `58-npm-ai-clis.sh` | `codex`, `gemini` e `grok` via npm, em `~/.npm-global` |
 | `60-cliproxyapi.sh` | instala a API local para as subscriptions de IA, sua config secreta e unit de usuário |
