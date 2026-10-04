@@ -55,8 +55,19 @@ Panel {
     selectedProviderId = providers[wrapped].providerId
   }
 
+  // O refresh nativo do Omarchy so coleta as contas padrao. As outras (perfis
+  // Claude extras, Codex Exato, Kimi pessoal, ai-usagebar) vem do timer do
+  // ezomar, de 15 em 15 minutos, e sem isto o "atualizar" deixava metade das
+  // linhas paradas. --no-block porque o coletor leva ate uns 30s.
   function refreshNow() {
     usage.refreshAll(true)
+    if (!accountsRefresh.running) accountsRefresh.running = true
+  }
+
+  Process {
+    id: accountsRefresh
+    running: false
+    command: ["systemctl", "--user", "start", "--no-block", "ezomar-agent-usage-accounts.service"]
   }
 
   function launchAgent() {
@@ -703,14 +714,40 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
-            PanelSectionHeader {
+            Item {
               width: parent.width
-              // Com a data, o conselho se explica sozinho e da para conferir.
-              text: root.bestAccount !== ""
-                ? "CONTAS · use " + root.bestAccount + " · vence em " + root.bestAccountIn
-                : "CONTAS"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+              height: Math.max(sectionHeader.implicitHeight, refreshLabel.implicitHeight)
+
+              PanelSectionHeader {
+                id: sectionHeader
+                width: parent.width - refreshLabel.width - Style.space(8)
+                // Com a data, o conselho se explica sozinho e da para conferir.
+                text: root.bestAccount !== ""
+                  ? "CONTAS · use " + root.bestAccount + " · vence em " + root.bestAccountIn
+                  : "CONTAS"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              // Visivel porque a tecla R, que ja atualizava, ninguem descobre.
+              Text {
+                id: refreshLabel
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: accountsRefresh.running ? "atualizando…" : "↻ atualizar"
+                color: root.foreground
+                opacity: refreshMouse.containsMouse ? 1.0 : 0.6
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+
+                MouseArea {
+                  id: refreshMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.refreshNow()
+                }
+              }
             }
 
             Repeater {
