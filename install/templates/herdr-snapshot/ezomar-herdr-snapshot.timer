@@ -8,7 +8,6 @@ OnBootSec=3min
 OnUnitActiveSec=1h
 RandomizedDelaySec=2min
 AccuracySec=1min
-Persistent=true
 Unit=ezomar-herdr-snapshot.service
 
 [Install]

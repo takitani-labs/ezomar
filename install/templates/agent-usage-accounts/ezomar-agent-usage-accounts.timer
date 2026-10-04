@@ -2,11 +2,15 @@
 Description=Periodically refresh Omarchy agent usage for every AI account
 
 [Timer]
-OnBootSec=2min
+# Counted from login (OnStartupSec), and no Persistent=, which only means
+# anything with OnCalendar=. On 2026-10-03 the machine booted at 19:06 and the
+# login came at 19:38: the timers that had Persistent=true and OnBootSec= never
+# fired in the new session, and the panel kept four-hour-old numbers. The ones
+# without Persistent= fired right after login.
+OnStartupSec=2min
 OnUnitActiveSec=15min
 RandomizedDelaySec=30s
 AccuracySec=30s
-Persistent=true
 Unit=ezomar-agent-usage-accounts.service
 
 [Install]
