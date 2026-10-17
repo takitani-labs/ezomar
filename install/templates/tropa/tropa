@@ -1,0 +1,1768 @@
+#!/usr/bin/env bash
+# tropa: braço operacional do skill tropadobolsonaro (Claude Code).
+#
+# Quem decide é o Flávio, a sessão do Claude que orquestra: escreve a spec,
+# escolhe o dinossauro, revisa e faz o merge. O tropa só faz a parte mecânica,
+# sempre do mesmo jeito: uma worktree e uma aba do herdr por tarefa, o agente
+# (um CLI que não é Claude) aberto com a conta e o esforço certos, a espera, a
+# leitura do resultado e a limpeza no fim.
+#
+# Por que um script e não instruções no skill: os detalhes que quebram são
+# pequenos e chatos. CODEX_HOME por conta, o arquivo de confiança que o Kimi
+# exige em toda worktree nova, o --env do herdr que só chega no painel raiz, o
+# nome de agente limitado a 32 caracteres, o Grok que não sai com ctrl+c.
+# Escritos uma vez aqui, deixam de depender da memória do modelo.
+#
+# Só usa comandos do herdr 0.8.2 conferidos ao vivo em 17/10/2026. Sem herdr
+# (ou com --headless no `up`) roda os mesmos passos em modo headless, um
+# processo por passo, para o Flávio despachar em background.
+#
+# Estado:  ~/.local/state/tropa/<run>/state.json, mais uma pasta por tarefa com
+#          spec, prompt e relatório de cada passo, logs e o script de cada
+#          passo headless.
+# Elenco:  ~/.config/tropa/roster.json   Memes: ~/.config/tropa/memes.json
+#
+# Guarda: todo passo de dinossauro roda com wrappers na frente do PATH (dotnet,
+# git, psql, aws, mise) e um punhado de variáveis (PGPASSFILE, AWS_*, pushurl
+# do git). A spec continua sendo a regra; a guarda é a segunda camada, para o
+# dia em que o agente não ler a spec. Configuração em roster.json, chave guard.
+#
+# Códigos de saída do `wait` (e do `deploy`/`review`/`fix` em modo headless):
+#   0 terminou com relatório   2 processo saiu com erro (ou o runner sumiu)
+#   3 terminou sem relatório   4 travado (tela de confiança, aprovação, ou o
+#   prompt nunca chegou: responda a tela e rode `tropa unblock`)
+#   5 estourou o tempo   6 revisor mexeu na worktree (revisão contaminada)
+# Códigos de `deploy`/`review`/`fix` antes de abrir qualquer coisa:
+#   7 sem vaga (já há `max` passos em campo)   8 a conta do dinossauro está ocupada
+#
+# Os filtros do jq usam $variável dentro de aspas simples de propósito (são
+# variáveis do jq, passadas com --arg), e o script do passo headless é escrito
+# com $rc literal. O aviso SC2016 não se aplica ao arquivo inteiro.
+# shellcheck disable=SC2016
+set -euo pipefail
+# Bash 5.2+ troca '&' na substituição ${x//a/b} pelo trecho casado; prompt com
+# '&' sairia corrompido.
+shopt -u patsub_replacement 2>/dev/null || true
+
+VERSION="0.2.0"
+HERDR="${TROPA_HERDR_BIN:-herdr}"
+STATE_ROOT="${TROPA_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/tropa}"
+CONF_DIR="${TROPA_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/tropa}"
+ROSTER="${TROPA_ROSTER:-$CONF_DIR/roster.json}"
+MEMES="${TROPA_MEMES:-$CONF_DIR/memes.json}"
+USAGE_DIR="${TROPA_USAGE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage}"
+POLL_SECONDS="${TROPA_POLL_SECONDS:-10}"
+QUOTA_MAX="${TROPA_QUOTA_MAX:-0.9}"
+SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
+GUARD_DIR="$STATE_ROOT/_guard/bin"
+# Teto de cada passo headless (execução e correção; revisão tem o seu), em
+# segundos. O `timeout` mata o CLI travado e o `wait` devolve 5.
+STEP_TIMEOUT="${TROPA_STEP_TIMEOUT:-5400}"
+REVIEW_TIMEOUT="${TROPA_REVIEW_TIMEOUT:-3600}"
+# Passo headless sem arquivo de pid depois disto: o runner nem começou.
+START_GRACE="${TROPA_START_GRACE:-120}"
+
+EXIT_FAILED=2
+EXIT_NOREPORT=3
+EXIT_BLOCKED=4
+EXIT_TIMEOUT=5
+EXIT_TAINTED=6
+EXIT_NOSLOT=7
+EXIT_BUSY=8
+
+# Globais usadas pelo expand(); preenchidas antes de cada passo.
+X_WT="" X_EFFORT="" X_MODEL="" X_PROMPT="" X_OUT=""
+# Última resposta do herdr: o JSON do stdout quando dá certo, o JSON de erro
+# (que o herdr 0.8.2 escreve no stderr) quando falha.
+HOUT=""
+
+die() { echo "tropa: $*" >&2; exit 1; }
+warn() { echo "tropa: $*" >&2; }
+now() { date -Iseconds; }
+
+usage() {
+  cat <<'EOF'
+tropa: helper do skill tropadobolsonaro (worktree + aba do herdr + dinossauro por tarefa)
+
+  tropa up <run> --repo <caminho> [--label <nome>] [--headless] [--max <n>] [--base <ref>]
+  tropa runs [--all]
+  tropa deploy <run> <tarefa> --dino <chave> --spec <arquivo> [--title <ID>]
+               [--effort exec|hard|max|<valor>] [--base <ref>] [--label <texto>] [--model <m>] [--force]
+  tropa review <run> <tarefa> [--dino <chave>] [--effort max|<valor>] [--label <texto>] [--force]
+  tropa fix <run> <tarefa> --file <achados.md> [--dino <chave>] [--effort exec|hard|<valor>] [--force]
+  tropa wait <run> <tarefa> [--timeout <ms>] [--close]
+  tropa unblock <run> <tarefa>          (= tropa prompt <run> <tarefa> --resend)
+  tropa prompt <run> <tarefa> [--exec] <texto>
+  tropa read <run> <tarefa> [--lines <n>]
+  tropa changes <run> <tarefa> [--scope "<glob> <glob>..."]
+  tropa status <run> [tarefa] [--json]
+  tropa slots <run>
+  tropa board <run>
+  tropa mark <run> <tarefa> <fase> [--note <texto>]
+  tropa say <run> <evento> [tarefa]
+  tropa notify <run> <mensagem> [--title <título>]
+  tropa recall <run> <tarefa>
+  tropa clean <run> <tarefa> [--force]
+  tropa down <run> [--keep-worktrees]
+  tropa roster [--json]
+  tropa smoke <dino> [--effort exec|max|<valor>]
+  tropa guard [--check <pasta>]
+
+run: [a-z][a-z0-9-], até 12 caracteres. tarefa: [a-z0-9][a-z0-9._-], até 48.
+Eventos do say: start working self_review cross_review bug_found flavio_review
+merged failed handed_over recall.
+--force em deploy/review/fix pula a checagem de vaga (max) e de conta ocupada.
+EOF
+}
+
+# ---------------------------------------------------------------- utilidades
+
+need() { command -v "$1" >/dev/null 2>&1 || die "comando ausente: $1"; }
+
+valid_run() {
+  [[ "$1" =~ ^[a-z][a-z0-9-]{0,11}$ ]] || die "nome de run inválido: '$1' (use [a-z][a-z0-9-], até 12)"
+}
+valid_task() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{0,47}$ ]] || die "nome de tarefa inválido: '$1' (use [a-z0-9][a-z0-9._-], até 48)"
+}
+
+run_dir() { printf '%s/%s' "$STATE_ROOT" "$1"; }
+state_file() { printf '%s/state.json' "$(run_dir "$1")"; }
+
+# st <run> <filtro jq> [args do jq...]
+st() {
+  local run="$1" filter="$2"
+  shift 2
+  jq -r "$@" "$filter" "$(state_file "$run")"
+}
+
+# st_update <run> <filtro jq> [args do jq...]. Vários `tropa wait` rodam ao
+# mesmo tempo em background, então toda escrita passa por flock.
+st_update() {
+  local run="$1" filter="$2" f
+  shift 2
+  f="$(state_file "$run")"
+  (
+    flock -x 9
+    jq "$@" "$filter" "$f" >"$f.tmp"
+    mv -f -- "$f.tmp" "$f"
+  ) 9>"$f.lock"
+}
+
+need_run() {
+  valid_run "$1"
+  [ -f "$(state_file "$1")" ] || die "run '$1' não existe (tropa up $1 --repo ...)"
+}
+need_task() {
+  need_run "$1"
+  [ "$(st "$1" '.tasks[$t] != null' --arg t "$2")" = true ] || die "tarefa '$2' não existe na run '$1'"
+}
+tget() { st "$1" ".tasks[\$t]$3 // empty" --arg t "$2"; }
+
+# rget <dino> <caminho jq>: campo do roster ("" quando null).
+rget() { jq -r --arg k "$1" ".dinos[\$k]$2 // empty" "$ROSTER"; }
+
+need_dino() {
+  [ -f "$ROSTER" ] || die "roster ausente: $ROSTER"
+  [ "$(jq -r --arg k "$1" '.dinos[$k] != null' "$ROSTER")" = true ] || die "dinossauro desconhecido: $1"
+}
+
+# expand <texto>: $HOME e placeholders {WT} {EFFORT} {MODEL} {OUT} {PROMPT}.
+expand() {
+  local s="$1"
+  s="${s//\$HOME/$HOME}"
+  s="${s//\{WT\}/$X_WT}"
+  s="${s//\{EFFORT\}/$X_EFFORT}"
+  s="${s//\{MODEL\}/$X_MODEL}"
+  s="${s//\{OUT\}/$X_OUT}"
+  s="${s//\{PROMPT\}/$X_PROMPT}"
+  printf '%s' "$s"
+}
+
+# dino_env <dino>: K=V já expandidos, separados por NUL.
+dino_env() {
+  local kv
+  while IFS= read -r kv; do
+    [ -n "$kv" ] || continue
+    expand "$kv"
+    printf '\0'
+  done < <(jq -r --arg k "$1" '.dinos[$k].env // {} | to_entries[] | "\(.key)=\(.value)"' "$ROSTER")
+}
+
+# dino_args <dino> <tui|headless>: argumentos expandidos, separados por NUL
+# (o prompt pode ter quebra de linha).
+dino_args() {
+  local a
+  while IFS= read -r a; do
+    expand "$a"
+    printf '\0'
+  done < <(jq -r --arg k "$1" --arg w "$2" '.dinos[$k][$w].args // [] | .[]' "$ROSTER")
+}
+
+resolve_effort() {
+  local v
+  v="$(jq -r --arg k "$1" --arg l "$2" '.dinos[$k].effort[$l] // $l' "$ROSTER")"
+  [ -n "$v" ] || die "esforço vazio para $1"
+  printf '%s' "$v"
+}
+
+nick() { jq -r --arg k "$1" '.dinos[$k] // $k' "$MEMES" 2>/dev/null || printf '%s' "$1"; }
+
+# meme_pick <chave do memes.json> <índice>
+meme_pick() {
+  jq -r --arg key "$1" --argjson i "$2" '.[$key] as $a | if ($a | type) == "array" and ($a | length) > 0 then $a[$i % ($a | length)] else ($a // "") end' "$MEMES"
+}
+
+name_index() { printf '%s' "$1" | cksum | awk '{print $1}'; }
+
+# hcall <args do herdr>: resposta em HOUT. O herdr escreve o JSON de erro no
+# stderr (código de saída 1), então numa falha HOUT recebe a última linha JSON
+# do stderr; é dali que herr/herr_msg tiram o código (agent_not_ready,
+# agent_prompt_stalled, agent_not_found...).
+hcall() {
+  local rc=0 errf err
+  errf="$(mktemp "${TMPDIR:-/tmp}/tropa-herdr.XXXXXX")"
+  HOUT="$("$HERDR" "$@" 2>"$errf")" || rc=$?
+  if [ "$rc" != 0 ] && [ -s "$errf" ]; then
+    err="$(grep -E '^[[:space:]]*\{' "$errf" | tail -n 1 || true)"
+    HOUT="${err:-$(tail -n 1 -- "$errf")}"
+  fi
+  rm -f -- "$errf"
+  return "$rc"
+}
+herr() { jq -r '.error.code // empty' <<<"$HOUT" 2>/dev/null || true; }
+herr_msg() {
+  if [ -z "$HOUT" ]; then
+    printf '(sem resposta do herdr)'
+  else
+    jq -r '(.error.code // "?") + ": " + (.error.message // "")' <<<"$HOUT" 2>/dev/null || printf '%s' "$HOUT"
+  fi
+}
+
+uses_herdr() { [ "$(st "$1" '.herdr')" = true ]; }
+
+# Linha de identidade da worktree: HEAD, status, diff e o conteúdo dos arquivos
+# não rastreados. Revisor que mexe em qualquer um deles muda o valor.
+fingerprint() {
+  {
+    git -C "$1" rev-parse HEAD
+    git -C "$1" status --porcelain=v1 -uall
+    git -C "$1" diff HEAD
+    (cd -- "$1" && git ls-files -o --exclude-standard -z | xargs -0 -r sha256sum)
+  } 2>/dev/null | sha256sum | cut -c1-16
+}
+
+agent_name() { # <dino> <run> <índice> <passo>
+  local p s
+  p="$(rget "$1" '.agent_prefix')"
+  p="${p:-dino}"
+  case "$4" in
+    exec*) s="e${4#exec}" ;;
+    review*) s="r${4#review}" ;;
+    cross*) s="x${4#cross}" ;;
+    fix*) s="f${4#fix}" ;;
+    *) s="$4" ;;
+  esac
+  local n="${p:0:8}-${2:0:12}-${3}-${s}"
+  printf '%s' "${n:0:32}"
+}
+
+# next_step <run> <tarefa> <tipo>: exec1, review2, fix1...
+next_step() {
+  local n
+  n="$(st "$1" '[.tasks[$t].history // [] | .[] | select(.kind == $k)] | length' --arg t "$2" --arg k "$3")"
+  printf '%s%d' "$3" "$((n + 1))"
+}
+
+lane_label() { # <run> <tarefa> <tipo> <dino>
+  local idx key tpl title word
+  idx="$(tget "$1" "$2" '.index')"
+  case "$3" in
+    review) key=review_tab_names ;;
+    cross) key=cross_tab_names ;;
+    *) key=tab_names ;;
+  esac
+  tpl="$(meme_pick "$key" "${idx:-0}")"
+  title="$(tget "$1" "$2" '.title')"
+  title="${title:-$2}"
+  word="$(nick "$4" | awk '{print $1}')"
+  printf '%s [%s]' "${tpl//\{task\}/${title:0:24}}" "$word"
+}
+
+# O Kimi pede confiança em toda pasta nova e o herdr não vê esse diálogo como
+# bloqueio (devolve idle). O primeiro prompt então aperta Enter no diálogo e se
+# perde. Gravar o registro antes evita isso. Formato conferido com o registro
+# existente da worktree antecedentes_pi: wd_<slug>_<sha256(caminho)[:12]>.
+#
+# O Grok guarda a confiança em ~/.grok/trusted_folders.toml e, numa worktree
+# ligada, pergunta pela raiz do repositório principal (foi essa a entrada que ele
+# gravou quando a tela foi respondida à mão). O --always-approve não passa essa
+# tela, e o dd-intelligence tem hooks em .claude/settings.json, então a tela
+# aparece em toda lane nova. Uma entrada por repositório resolve todas.
+pretrust() { # <dino> <worktree>
+  case "$(rget "$1" '.trust')" in
+    kimi-file) pretrust_kimi "$@" ;;
+    grok-folders) pretrust_grok "$2" ;;
+  esac
+}
+
+pretrust_grok() { # <worktree>
+  local common root esc file
+  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  root="$(dirname -- "$common")"
+  esc="${root//\\/\\\\}"
+  esc="${esc//\"/\\\"}"
+  file="$HOME/.grok/trusted_folders.toml"
+  mkdir -p -- "$HOME/.grok" "$STATE_ROOT"
+  (
+    flock -x 9
+    if ! grep -qF "[folders.\"$esc\"]" "$file" 2>/dev/null; then
+      local sep=""
+      if [ -s "$file" ]; then sep=$'\n'; fi
+      printf '%s[folders."%s"]\ntrusted = true\ndecided_at = %s\n' "$sep" "$esc" "$(date +%s)" >>"$file"
+    fi
+  ) 9>"$STATE_ROOT/.grok-trust.lock"
+}
+
+kimi_trust_file() { # <dino> <worktree>
+  local home="" kv base hash
+  while IFS= read -r -d '' kv; do
+    case "$kv" in KIMI_CODE_HOME=*) home="${kv#KIMI_CODE_HOME=}" ;; esac
+  done < <(dino_env "$1")
+  home="${home:-$HOME/.kimi-code}"
+  base="$(basename -- "$2" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g')"
+  hash="$(printf '%s' "$2" | sha256sum | cut -c1-12)"
+  printf '%s/workspace-trust/wd_%s_%s' "$home" "${base:0:40}" "$hash"
+}
+
+# A confiança gravada para a worktree vira lixo quando ela some: sem isto cada
+# tarefa deixava um arquivo em workspace-trust/ de cada conta Kimi que a tocou.
+untrust_kimi() { # <worktree>
+  local k
+  while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    rm -f -- "$(kimi_trust_file "$k" "$1")"
+  done < <(jq -r '.dinos | to_entries[] | select(.value.trust == "kimi-file") | .key' "$ROSTER")
+}
+
+pretrust_kimi() { # <dino> <worktree>
+  local file
+  file="$(kimi_trust_file "$1" "$2")"
+  if [ ! -e "$file" ]; then
+    mkdir -p -- "$(dirname -- "$file")"
+    jq -jnc --arg r "$2" --argjson t "$(date +%s%3N)" '{root: $r, trustedAt: $t}' >"$file"
+  fi
+}
+
+screen_blocked() { # <agente>
+  local out
+  out="$("$HERDR" agent read "$1" --source visible 2>/dev/null || true)"
+  grep -qiE 'trust this folder|do you trust|trust this (directory|workspace|project)' <<<"$out"
+}
+
+agent_exit() { # <agente> <dino> <painel>
+  local text k
+  text="$(rget "$2" '.exit.text')"
+  if [ -n "$text" ]; then
+    hcall pane send-text "$3" "$text" || true
+    hcall pane send-keys "$3" enter || true
+  else
+    while IFS= read -r k; do
+      [ -n "$k" ] || continue
+      hcall agent send-keys "$1" "$k" || true
+      sleep "${TROPA_KEY_DELAY:-1}"
+    done < <(jq -r --arg d "$2" '.dinos[$d].exit.keys // [] | .[]' "$ROSTER")
+  fi
+}
+
+close_tab() { # <run> <tarefa> <tab>
+  local run="$1" task="$2" tab="$3" agent dino pane
+  # Separador \x1f e não tab: com IFS de espaço em branco um agente vazio
+  # (painel headless) sumiria e deslocaria os campos.
+  while IFS=$'\x1f' read -r agent dino pane; do
+    if [ -n "$agent" ]; then agent_exit "$agent" "$dino" "$pane"; fi
+  done < <(st "$run" '.tasks[$t].tabs // [] | .[] | select(.tab == $b) | [.agent, .dino, .pane] | join("\u001f")' --arg t "$task" --arg b "$tab")
+  sleep "${TROPA_EXIT_GRACE:-2}"
+  hcall tab close "$tab" || warn "tab close $tab: $(herr_msg)"
+  st_update "$run" '.tasks[$t].tabs |= map(select(.tab != $b))' --arg t "$task" --arg b "$tab"
+}
+
+ws_tokens() {
+  uses_herdr "$1" || return 0
+  local ws running total merged
+  ws="$(st "$1" '.workspace.id')"
+  total="$(st "$1" '.tasks | length')"
+  running="$(st "$1" '[.tasks[] | select(.step.status == "running")] | length')"
+  merged="$(st "$1" '[.tasks[] | select((.phase // "") | startswith("merged"))] | length')"
+  hcall workspace report-metadata "$ws" --source tropa --token "em_campo=$running" --token "na_master=$merged/$total" || true
+}
+
+# ---------------------------------------------------------------- guarda
+# Wrappers gerados em $GUARD_DIR e postos na frente do PATH de cada passo. Não
+# é sandbox: um agente decidido chama /usr/bin/git direto. É a segunda camada,
+# para o comando proibido que sai por descuido (o `dotnet test` sem filtro de
+# 2026-10-10 saiu de um subagente que tinha o CLAUDE.md no contexto).
+#
+# O `mise` também ganha wrapper: um `bash -l` aberto pelo agente roda
+# `mise activate`, que põe o dotnet do mise na frente de tudo. O wrapper devolve
+# a guarda para a frente logo depois. No zsh interativo o mise (com
+# activate_aggressive desligado, o padrão) respeita o que foi posto no PATH
+# depois da ativação.
+
+guard_on() { # <dino>
+  [ "${TROPA_GUARD:-1}" != 0 ] || return 1
+  [ -f "$ROSTER" ] || return 1
+  [ "$(jq -r '.guard.enabled != false' "$ROSTER")" = true ] || return 1
+  [ -z "${1:-}" ] || [ "$(jq -r --arg k "$1" '.dinos[$k].guard != false' "$ROSTER")" = true ]
+}
+
+# guard_env: K=V da guarda, expandidos, separados por NUL (sem o PATH).
+guard_env() {
+  local kv
+  while IFS= read -r kv; do
+    [ -n "$kv" ] || continue
+    expand "$kv"
+    printf '\0'
+  done < <(jq -r '.guard.env // {} | to_entries[] | "\(.key)=\(.value)"' "$ROSTER")
+}
+
+guard_prelude() { # <nome>
+  cat <<EOF
+#!/usr/bin/env bash
+# tropa guard $VERSION: $1. Gerado pelo tropa; editar aqui não adianta.
+EOF
+  cat <<'EOF'
+set -u
+self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+real_bin() {
+  local d parts
+  IFS=: read -r -a parts <<<"$PATH"
+  for d in "${parts[@]}"; do
+    [ -n "$d" ] || continue
+    [ "$(cd -- "$d" 2>/dev/null && pwd -P)" = "$self_dir" ] && continue
+    if [ -x "$d/$1" ] && [ ! -d "$d/$1" ]; then printf '%s' "$d/$1"; return 0; fi
+  done
+  return 1
+}
+refuse() {
+  printf 'tropa guard: %s\n' "$*" >&2
+  printf 'tropa guard: this command is blocked inside a tropa lane. Do not work around it; write it in your report.\n' >&2
+  exit 126
+}
+run_real() {
+  local r name="$1"
+  shift
+  r="$(real_bin "$name")" || { printf 'tropa guard: %s not found behind the guard\n' "$name" >&2; exit 127; }
+  exec "$r" "$@"
+}
+EOF
+}
+
+# guard_write <nome> <corpo>: grava só quando muda (mv atômico), porque vários
+# `tropa` rodam ao mesmo tempo.
+guard_write() {
+  local f="$GUARD_DIR/$1" tmp
+  tmp="$(mktemp "$GUARD_DIR/.$1.XXXXXX")"
+  { guard_prelude "$1"; printf '%s\n' "$2"; } >"$tmp"
+  chmod 0755 "$tmp"
+  if [ -f "$f" ] && cmp -s "$tmp" "$f"; then rm -f -- "$tmp"; else mv -f -- "$tmp" "$f"; fi
+}
+
+ensure_guard() {
+  mkdir -p -- "$GUARD_DIR"
+  local req block run_block name
+  req="$(jq -r '.guard.test_filter_required // "TestCategory!=Integration"' "$ROSTER")"
+  run_block="$(jq -r '.guard.dotnet_run_block // "SelfHost|QueueProcessor|DatabaseMigrations"' "$ROSTER")"
+  block="$(jq -r '.guard.git_block // ["push"] | join(" ")' "$ROSTER")"
+
+  guard_write dotnet "$(printf 'REQ=%q\nRUN_BLOCK=%q\n' "$req" "$run_block")
+$(cat <<'EOF'
+sub=""
+for a in "$@"; do
+  case "$a" in
+    -*) continue ;;
+    *) sub="$a"; break ;;
+  esac
+done
+joined="$*"
+case "$sub" in
+  test | vstest)
+    case "$joined" in
+      *"$REQ"*) ;;
+      *) refuse "dotnet $sub without \"$REQ\" in the filter: the local config points at the PRODUCTION database. Use scripts/test-unit.sh or add the filter." ;;
+    esac
+    ;;
+  run | watch | exec)
+    if [[ "$joined $PWD" =~ $RUN_BLOCK ]]; then refuse "dotnet $sub of a host, migration or console project (production config)"; fi
+    ;;
+  *.dll | *.exe)
+    if [[ "$sub" =~ $RUN_BLOCK ]]; then refuse "dotnet $sub (host, migration or console project)"; fi
+    ;;
+esac
+run_real dotnet "$@"
+EOF
+)"
+
+  guard_write git "$(printf 'BLOCK=%q\n' "$block")
+$(cat <<'EOF'
+sub=""
+skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    -C | -c | --git-dir | --work-tree | --namespace | --config-env | --super-prefix) skip=1 ;;
+    -*) ;;
+    *) sub="$a"; break ;;
+  esac
+done
+for b in $BLOCK; do
+  if [ "$sub" = "$b" ]; then refuse "git $sub: the orchestrator commits, rebases and merges; nobody pushes from a lane"; fi
+done
+run_real git "$@"
+EOF
+)"
+
+  guard_write mise "$(cat <<'EOF'
+# `mise activate` num shell novo põe as ferramentas do mise na frente do PATH;
+# a guarda volta para a frente logo depois.
+if [ "${1:-}" = activate ]; then
+  r="$(real_bin mise)" || exit 127
+  "$r" "$@" || exit $?
+  printf '\nexport PATH=%q:"$PATH"\n' "$self_dir"
+  exit 0
+fi
+run_real mise "$@"
+EOF
+)"
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    guard_write "$name" "refuse \"$name is blocked in tropa lanes: production databases, AWS and the fleet belong to the operator\""
+  done < <(jq -r '.guard.refuse // [] | .[]' "$ROSTER")
+}
+
+# guard_export_line: o export que o painel do agente roda antes do `agent
+# start`, mais uma marca para esperar ($((1+1)) só vira 2 quando executa, então
+# o texto digitado não casa com a espera).
+guard_export_line() {
+  local kv line
+  line="export PATH=$(printf '%q' "$GUARD_DIR"):\"\$PATH\""
+  while IFS= read -r -d '' kv; do
+    line+=" ${kv%%=*}=$(printf '%q' "${kv#*=}")"
+  done < <(guard_env)
+  printf '%s; echo TROPA_GUARD_$((1+1))K' "$line"
+}
+
+# ---------------------------------------------------------------- vagas e contas
+# `max` (do `up`) conta todo passo em campo: execução, correção, autorrevisão e
+# cruzada. A conta do dinossauro (campo account do roster) só pode ter um passo
+# em campo (ou travado numa tela) por vez nesta run. --force pula as duas
+# checagens. Dois `deploy` disparados no mesmo instante podem passar juntos; o
+# Flávio dispara um por vez.
+
+check_capacity() { # <run> <dino> <tarefa> <force>
+  local run="$1" dino="$2" task="$3" force="$4" max n acc busy
+  [ "$force" = 1 ] && return 0
+  max="$(st "$run" '.max // 4')"
+  n="$(st "$run" '[.tasks[] | select(.step.status == "running")] | length')"
+  if [ "$n" -ge "$max" ]; then
+    warn "sem vaga: $n de $max passos em campo (tropa slots $run). Espere um terminar ou use --force."
+    exit "$EXIT_NOSLOT"
+  fi
+  acc="$(jq -r --arg k "$dino" '.dinos[$k].account // $k' "$ROSTER")"
+  # Passo travado numa tela também é sessão viva da conta.
+  busy="$(st "$run" '[.tasks | to_entries[] | select(.key != $t and (.value.step.status == "running" or .value.step.status == "blocked"))
+      | select(($r[0].dinos[.value.step.dino].account // .value.step.dino) == $a) | .key] | join(", ")' \
+    --arg t "$task" --arg a "$acc" --slurpfile r "$ROSTER")"
+  if [ -n "$busy" ]; then
+    warn "a conta $acc ($dino) já tem passo em campo: $busy. Escolha outro dinossauro, espere, ou use --force."
+    exit "$EXIT_BUSY"
+  fi
+}
+
+# ---------------------------------------------------------------- prompts
+# Inglês, sem meme, uma linha só (vai digitado no TUI pelo `agent prompt`).
+
+PRECEDENCE="Where the spec disagrees with an agent instruction file in the repository (AGENTS.md, CLAUDE.md or similar), the spec wins. Some commands are blocked in this environment (for example git commit or push, dotnet test without the required filter, psql, aws); if one is refused, do not work around it, write it in your report."
+
+exec_prompt() { # <título> <spec> <wt> <branch> <relatório>
+  printf '%s' "You are the implementer for task $1. Read the full task spec at $2 before doing anything. Work only inside this git worktree: $3 (branch $4). Follow the spec's acceptance criteria, non-goals and repository rules exactly. $PRECEDENCE Do not commit, push, rebase or merge, and do not edit TODO.md, TODO-ARCHIVE.md or anything under todo/. Run the verification commands listed in the spec and keep their real output. When you are done, write a report to $5 with: files changed, the status of each numbered acceptance criterion, each verification command with its exit code, anything you could not do and why, and any new problem you noticed (as a proposal, never as a TODO edit). Then stop."
+}
+
+review_prompt() { # <spec> <wt> <base_sha> <relatório>
+  printf '%s' "You are an independent code reviewer in a fresh session; you did not write this change. Read the task spec at $1. The change under review is in the git worktree $2, measured against the commit the lane started from ($3): everything in 'git diff $3' (committed and uncommitted), every untracked file listed by 'git ls-files -o --exclude-standard' (read them in full), and any commit in 'git log --oneline $3..HEAD'. $PRECEDENCE Do not create, modify or delete any file inside the worktree and do not run formatters or code generators there; building and running the spec's verification commands is allowed. Look for acceptance criteria that are not really met, behavior changes outside the spec, broken edge cases, missing or weak tests, and repository-rule violations. Write numbered findings to $4, each with severity (blocker, major or minor), file:line, a one-line failure scenario and a suggested fix, or the single line NO FINDINGS. Then stop."
+}
+
+fix_prompt() { # <achados> <wt> <spec> <relatório> <base_sha> [outro]
+  local other=""
+  if [ -n "${6:-}" ]; then
+    other="The worktree already holds an implementation written by another agent: read the spec and the current change ('git diff $5' plus untracked files) before you touch anything. "
+  fi
+  printf '%s' "${other}Apply the review findings in $1 to the git worktree $2, keeping to the task spec at $3. For every numbered finding either fix it or write one sentence explaining why it is wrong; never skip one silently. $PRECEDENCE Do not commit, push, rebase or merge, and do not edit TODO.md, TODO-ARCHIVE.md or anything under todo/. Re-run the spec's verification commands, then write a report to $4 listing each finding as fixed or disputed (with the reason) and each verification command with its exit code. Then stop."
+}
+
+# ---------------------------------------------------------------- passo
+# launch_session lê as globais L_* e grava o passo no estado.
+#   L_RUN L_TASK L_DINO L_LEVEL L_STEP L_KIND L_PROMPT L_EXPECT L_LABEL
+#   L_MODEL L_WT L_DIR L_IDX L_FP L_REUSE_TAB L_REUSE_PANE
+# Modos: agent (TUI aberto pelo herdr), pane (headless dentro de um painel, para
+# CLI que o herdr não detecta) e headless (sem herdr, roda aqui mesmo).
+# O prompt de todo passo fica em <dir>/<passo>-prompt.txt. Quando a abertura
+# trava numa tela, o prompt não chega ao agente; depois que a tela for
+# respondida, `tropa unblock` manda esse texto.
+
+# ensure_env_dirs <K=V>...: cria o XDG_STATE_HOME privado de um dinossauro.
+ensure_env_dirs() {
+  local kv
+  for kv in "$@"; do
+    case "$kv" in XDG_STATE_HOME=?*) mkdir -p -- "${kv#*=}" ;; esac
+  done
+}
+
+launch_session() {
+  local effort model mode tab="" pane="" agent="" session="" status=running sent=true err=""
+  local log rcf last runner pidf promptf kv kind guard=false step_timeout
+  local -a envs=() genv=() eargs=() args=()
+
+  effort="$(resolve_effort "$L_DINO" "$L_LEVEL")"
+  model="${L_MODEL:-$(rget "$L_DINO" '.model')}"
+  log="$L_DIR/$L_STEP.log"
+  rcf="$L_DIR/$L_STEP.rc"
+  pidf="$L_DIR/$L_STEP.pid"
+  last="$L_DIR/$L_STEP-last.md"
+  runner="$L_DIR/$L_STEP.sh"
+  promptf="$L_DIR/$L_STEP-prompt.txt"
+  X_WT="$L_WT" X_EFFORT="$effort" X_MODEL="$model" X_PROMPT="$L_PROMPT" X_OUT="$last"
+  rm -f -- "$rcf" "$last" "$pidf"
+  printf '%s\n' "$L_PROMPT" >"$promptf"
+  case "$L_KIND" in
+    review | cross) step_timeout="$REVIEW_TIMEOUT" ;;
+    *) step_timeout="$STEP_TIMEOUT" ;;
+  esac
+
+  kind="$(rget "$L_DINO" '.kind')"
+  if ! uses_herdr "$L_RUN"; then
+    mode=headless
+  elif [ -n "$kind" ] && [ "$(jq -r --arg k "$L_DINO" '.dinos[$k].tui != null' "$ROSTER")" = true ]; then
+    mode=agent
+  else
+    mode=pane
+  fi
+
+  mapfile -d '' -t envs < <(dino_env "$L_DINO")
+  ensure_env_dirs "${envs[@]}"
+  if guard_on "$L_DINO"; then
+    guard=true
+    ensure_guard
+    mapfile -d '' -t genv < <(guard_env)
+  fi
+  pretrust "$L_DINO" "$L_WT"
+
+  if [ "$mode" != headless ]; then
+    if [ -n "${L_REUSE_PANE:-}" ]; then
+      # Painel reaproveitado: o shell dele já recebeu a guarda no passo anterior.
+      tab="$L_REUSE_TAB"
+      pane="$L_REUSE_PANE"
+    else
+      for kv in "${envs[@]}"; do eargs+=(--env "$kv"); done
+      hcall tab create --workspace "$(st "$L_RUN" '.workspace.id')" --cwd "$L_WT" --label "$L_LABEL" --no-focus "${eargs[@]}" \
+        || die "tab create falhou: $(herr_msg)"
+      tab="$(jq -r '.result.tab.tab_id' <<<"$HOUT")"
+      pane="$(jq -r '.result.root_pane.pane_id' <<<"$HOUT")"
+      # A guarda entra pelo shell do painel, depois do zshrc: um --env PATH
+      # seria reordenado pela ativação do mise. No modo pane ela vai no runner.
+      if [ "$mode" = agent ] && [ "$guard" = true ]; then
+        if ! hcall pane run "$pane" "$(guard_export_line)" \
+          || ! hcall pane wait-output "$pane" --match TROPA_GUARD_2K --timeout 15000; then
+          local gerr
+          gerr="$(herr_msg)"
+          hcall tab close "$tab" || true
+          die "a guarda não confirmou no painel $pane ($gerr); a aba foi fechada e nada foi aberto"
+        fi
+      fi
+    fi
+    hcall pane report-metadata "$pane" --source tropa --title "$(nick "$L_DINO"): $L_STEP" \
+      --token "task=$L_TASK" --token "step=$L_STEP" || true
+  fi
+
+  if [ "$mode" = agent ]; then
+    agent="$(agent_name "$L_DINO" "$L_RUN" "$L_IDX" "$L_STEP")"
+    mapfile -d '' -t args < <(dino_args "$L_DINO" tui)
+    if ! hcall agent start "$agent" --kind "$kind" --pane "$pane" --timeout 60000 -- "${args[@]}"; then
+      err="$(herr)"
+      warn "agent start $agent: $(herr_msg). Leia a tela (tropa read $L_RUN $L_TASK), responda e rode: tropa unblock $L_RUN $L_TASK"
+      status=blocked sent=false
+    elif screen_blocked "$agent"; then
+      err=trust_screen
+      warn "$agent abriu com tela de confiança. Leia (tropa read $L_RUN $L_TASK), responda e rode: tropa unblock $L_RUN $L_TASK"
+      status=blocked sent=false
+    elif ! hcall agent prompt "$agent" "$L_PROMPT" --wait --until working --until "done" --until blocked --timeout 120000; then
+      err="$(herr)"
+      warn "agent prompt $agent: $(herr_msg). Leia a tela (tropa read $L_RUN $L_TASK); depois: tropa unblock $L_RUN $L_TASK"
+      status=blocked sent=false
+    else
+      session="$(jq -r '.result.agent.agent_session.value // empty' <<<"$HOUT" 2>/dev/null || true)"
+      if [ "$(jq -r '.result.agent.agent_status // empty' <<<"$HOUT" 2>/dev/null || true)" = blocked ]; then
+        status=blocked
+      fi
+    fi
+  else
+    mapfile -d '' -t args < <(dino_args "$L_DINO" headless)
+    {
+      echo '#!/usr/bin/env bash'
+      echo "# gerado pelo tropa $VERSION: passo $L_STEP da tarefa $L_TASK ($L_DINO)"
+      echo 'set -o pipefail'
+      printf 'echo "$$" >%q\n' "$pidf"
+      printf 'cd -- %q || { echo 97 >%q; exit 97; }\n' "$L_WT" "$rcf"
+      if [ "$guard" = true ]; then
+        printf 'export PATH=%q:"$PATH"\n' "$GUARD_DIR"
+        for kv in "${genv[@]}"; do printf 'export %s=%q\n' "${kv%%=*}" "${kv#*=}"; done
+      fi
+      for kv in "${envs[@]}"; do printf 'export %s=%q\n' "${kv%%=*}" "${kv#*=}"; done
+      # timeout: um CLI travado não segura o passo para sempre (rc 124, ou 137
+      # depois do kill); o `wait` devolve 5.
+      printf 'timeout --kill-after=60 %q ' "$step_timeout"
+      printf '%q ' "$(expand "$(rget "$L_DINO" '.headless.bin')")" "${args[@]}"
+      printf '</dev/null 2>&1 | tee -a %q\n' "$log"
+      echo 'rc=${PIPESTATUS[0]}'
+      printf 'echo "$rc" >%q\n' "$rcf"
+      printf 'echo "[tropa] passo %s terminou com rc=$rc"\n' "$L_STEP"
+      echo 'exit "$rc"'
+    } >"$runner"
+    chmod +x "$runner"
+  fi
+
+  local stepjson
+  stepjson="$(jq -n --arg name "$L_STEP" --arg kind "$L_KIND" --arg dino "$L_DINO" --arg mode "$mode" \
+    --arg agent "$agent" --arg tab "$tab" --arg pane "$pane" --arg expect "$L_EXPECT" --arg last "$last" \
+    --arg rc "$rcf" --arg log "$log" --arg effort "$effort" --arg model "$model" --arg status "$status" \
+    --arg fp "${L_FP:-}" --arg session "$session" --arg at "$(now)" --argjson epoch "$(date +%s)" \
+    --arg reused "${L_REUSE_PANE:-}" --arg promptf "$promptf" --argjson sent "$sent" --arg pidf "$pidf" \
+    --arg err "$err" --argjson guard "$guard" --argjson to "$step_timeout" \
+    '{name: $name, kind: $kind, dino: $dino, mode: $mode, agent: $agent, tab: $tab, pane: $pane,
+      expect: $expect, last: $last, rc: $rc, log: $log, effort: $effort, model: $model,
+      status: $status, fingerprint: $fp, session: $session, started_at: $at, started_epoch: $epoch,
+      reused_pane: ($reused != ""), prompt_file: $promptf, prompt_sent: $sent,
+      pid_file: (if $mode == "agent" then "" else $pidf end), error: $err, guard: $guard,
+      timeout_s: (if $mode == "agent" then null else $to end)}')"
+  st_update "$L_RUN" '.tasks[$t].step = $s
+    | .tasks[$t].history += [$s]
+    | if $s.tab != "" and ($s.reused_pane | not)
+        then .tasks[$t].tabs += [{tab: $s.tab, pane: $s.pane, agent: $s.agent, dino: $s.dino, step: $s.name}]
+      elif $s.agent != "" and $s.tab != ""
+        then .tasks[$t].tabs |= map(if .tab == $s.tab then .agent = $s.agent | .dino = $s.dino | .step = $s.name else . end)
+      else . end' --arg t "$L_TASK" --argjson s "$stepjson"
+
+  if [ "$mode" = pane ]; then
+    hcall pane run "$pane" "bash $(printf '%q' "$runner")" || die "pane run falhou: $(herr_msg)"
+  fi
+
+  if [ "$mode" = headless ]; then
+    # Sem herdr o passo roda aqui e o resultado sai no formato do `wait`; o
+    # Flávio chama isto com run_in_background.
+    bash "$runner" >/dev/null 2>&1 || true
+    local rc=0
+    cmd_wait "$L_RUN" "$L_TASK" --timeout 1000 || rc=$?
+    return "$rc"
+  fi
+  jq -n --argjson s "$stepjson" --arg task "$L_TASK" --arg wt "$L_WT" \
+    '{task: $task, step: $s.name, dino: $s.dino, mode: $s.mode, effort: $s.effort, model: $s.model, agent: $s.agent,
+      tab: $s.tab, pane: $s.pane, worktree: $wt, expect: $s.expect, status: $s.status,
+      prompt_sent: $s.prompt_sent, error: $s.error, guard: $s.guard}'
+  ws_tokens "$L_RUN"
+  if [ "$status" = blocked ]; then return "$EXIT_BLOCKED"; fi
+  return 0
+}
+
+# ---------------------------------------------------------------- comandos
+
+cmd_up() {
+  [ $# -ge 1 ] || die "uso: tropa up <run> --repo <caminho>"
+  local run="$1" repo="" label="" headless=0 max="" base=""
+  shift
+  valid_run "$run"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) repo="$2"; shift 2 ;;
+      --label) label="$2"; shift 2 ;;
+      --headless) headless=1; shift ;;
+      --max) max="$2"; shift 2 ;;
+      --base) base="$2"; shift 2 ;;
+      *) die "up: opção desconhecida: $1" ;;
+    esac
+  done
+  if [ -n "$max" ]; then [[ "$max" =~ ^[1-9][0-9]?$ ]] || die "up: --max precisa ser um número de 1 a 99"; fi
+
+  local f
+  f="$(state_file "$run")"
+  if [ -f "$f" ]; then
+    if [ "$(st "$run" '.closed')" = true ]; then die "run '$run' já foi encerrada; use outro nome"; fi
+    if [ -n "$max" ]; then st_update "$run" '.max = ($m | tonumber)' --arg m "$max"; fi
+    if [ -n "$base" ]; then st_update "$run" '.base = $b' --arg b "$base"; fi
+    if uses_herdr "$run" && hcall workspace get "$(st "$run" '.workspace.id')"; then
+      st "$run" '{run, repo, base: (.base // .main), max: (.max // 4), workspace: .workspace.id, label: .workspace.label, resumed: true}'
+      return 0
+    fi
+    if ! uses_herdr "$run"; then
+      st "$run" '{run, repo, base: (.base // .main), max: (.max // 4), herdr: false, resumed: true}'
+      return 0
+    fi
+    die "a run '$run' existe mas o workspace sumiu; recrie com outro nome"
+  fi
+
+  [ -n "$repo" ] || die "up: --repo é obrigatório"
+  local common main
+  common="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || die "não é repositório git: $repo"
+  repo="$(dirname -- "$common")"
+  main="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  main="${main#origin/}"
+  main="${main:-master}"
+  if [ -n "$base" ]; then
+    git -C "$repo" rev-parse --verify -q "$base^{commit}" >/dev/null || die "up: base inexistente: $base"
+  fi
+
+  mkdir -p -- "$(run_dir "$run")"
+  [ -n "$label" ] || label="$(meme_pick workspace_names "$(name_index "$run")")"
+  local herdr=false ws="" tab="" pane="" focused=""
+  if [ "$headless" = 0 ] && [ "${HERDR_ENV:-}" = 1 ] && command -v "$HERDR" >/dev/null 2>&1; then
+    herdr=true
+    if hcall workspace list; then
+      focused="$(jq -r '[.result.workspaces[]? | select(.focused == true) | .workspace_id][0] // empty' <<<"$HOUT")"
+    fi
+    hcall workspace create --cwd "$repo" --label "$label" --no-focus || die "workspace create falhou: $(herr_msg)"
+    ws="$(jq -r '.result.workspace.workspace_id' <<<"$HOUT")"
+    tab="$(jq -r '.result.tab.tab_id' <<<"$HOUT")"
+    pane="$(jq -r '.result.root_pane.pane_id' <<<"$HOUT")"
+    hcall tab rename "$tab" "$(meme_pick hq_tab 0)" || true
+  fi
+
+  jq -n --arg run "$run" --arg repo "$repo" --arg main "$main" --argjson herdr "$herdr" \
+    --arg ws "$ws" --arg tab "$tab" --arg pane "$pane" --arg label "$label" --arg focused "$focused" \
+    --arg at "$(now)" --arg version "$VERSION" --arg base "$base" --argjson max "${max:-4}" \
+    '{version: 1, tropa: $version, run: $run, repo: $repo, main: $main, base: $base, max: $max, herdr: $herdr,
+      workspace: {id: $ws, tab: $tab, pane: $pane, label: $label, focused_before: $focused},
+      created_at: $at, closed: false, counters: {}, tasks: {}}' >"$f"
+
+  if [ "$herdr" = true ] && [ "${TROPA_NO_BOARD:-0}" != 1 ]; then
+    # O painel nasce com o ambiente do servidor do herdr, não com o deste
+    # processo: os caminhos efetivos vão na própria linha de comando.
+    local hbin
+    hbin="$(command -v "$HERDR" 2>/dev/null || printf '%s' "$HERDR")"
+    hcall pane run "$pane" "$(printf 'env TROPA_STATE_ROOT=%q TROPA_CONFIG_DIR=%q TROPA_ROSTER=%q TROPA_MEMES=%q TROPA_HERDR_BIN=%q TROPA_BOARD_SECONDS=%q %q board %q' \
+      "$STATE_ROOT" "$CONF_DIR" "$ROSTER" "$MEMES" "$hbin" "${TROPA_BOARD_SECONDS:-20}" "$SELF" "$run")" || true
+  fi
+  st "$run" '{run, repo, main, base: (if .base == "" then .main else .base end), max, herdr, workspace: .workspace.id, label: .workspace.label, state: input_filename}'
+}
+
+# runs: as runs abertas (closed=false), para uma sessão nova retomar.
+cmd_runs() {
+  local all=0 f rows="[]"
+  if [ "${1:-}" = --all ]; then all=1; fi
+  for f in "$STATE_ROOT"/*/state.json; do
+    [ -f "$f" ] || continue
+    rows="$(jq --argjson all "$all" --slurpfile s "$f" --arg dir "$(dirname -- "$f")" \
+      '($s[0]) as $r | if ($all == 1) or ($r.closed != true) then . + [{
+        run: $r.run, repo: $r.repo, closed: ($r.closed // false), created_at: $r.created_at,
+        base: (if ($r.base // "") == "" then $r.main else $r.base end), workspace: $r.workspace.id,
+        tasks: ($r.tasks | length),
+        running: ([$r.tasks[] | select(.step.status == "running")] | length),
+        merged: ([$r.tasks[] | select((.phase // "") | startswith("merged"))] | length),
+        diary: ($dir + "/flavio.md"), queue: ($dir + "/queue.json")}] else . end' <<<"$rows")"
+  done
+  jq 'sort_by(.created_at)' <<<"$rows"
+}
+
+cmd_deploy() {
+  [ $# -ge 2 ] || die "uso: tropa deploy <run> <tarefa> --dino <chave> --spec <arquivo>"
+  local run="$1" task="$2" dino="" spec="" level=exec base="" label="" title="" model="" force=0
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dino) dino="$2"; shift 2 ;;
+      --spec) spec="$2"; shift 2 ;;
+      --effort) level="$2"; shift 2 ;;
+      --base) base="$2"; shift 2 ;;
+      --label) label="$2"; shift 2 ;;
+      --title) title="$2"; shift 2 ;;
+      --model) model="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) die "deploy: opção desconhecida: $1" ;;
+    esac
+  done
+  need_run "$run"
+  valid_task "$task"
+  [ -n "$dino" ] || die "deploy: --dino é obrigatório"
+  need_dino "$dino"
+  [ "$(rget "$dino" '.enabled')" != false ] || die "$dino está desligado no roster"
+  [ -n "$spec" ] && [ -s "$spec" ] || die "deploy: --spec precisa apontar para um arquivo com conteúdo"
+
+  local repo dir wt branch idx exists
+  repo="$(st "$run" '.repo')"
+  dir="$(run_dir "$run")/$task"
+  exists="$(st "$run" '.tasks[$t] != null' --arg t "$task")"
+  if [ "$exists" = true ]; then
+    [ "$(tget "$run" "$task" '.step.status')" != running ] || die "$task ainda está em campo; espere (tropa wait) ou recolha (tropa recall)"
+    [ "$(st "$run" '.tasks[$t].tabs // [] | length' --arg t "$task")" = 0 ] || die "$task ainda tem aba aberta; tropa recall $run $task primeiro"
+    idx="$(tget "$run" "$task" '.index')"
+    wt="$(tget "$run" "$task" '.worktree')"
+    branch="$(tget "$run" "$task" '.branch')"
+    [ -d "$wt" ] || die "a worktree de $task sumiu: $wt"
+  fi
+  check_capacity "$run" "$dino" "$task" "$force"
+  if [ "$exists" != true ]; then
+    idx="$(st "$run" '.tasks | length')"
+    branch="tropa/$task"
+    local root
+    root="${TROPA_WORKTREE_ROOT:-$(dirname -- "$repo")/.tropa-worktrees}"
+    wt="$root/$(basename -- "$repo")-$task"
+    [ ! -e "$wt" ] || die "já existe algo em $wt; limpe ou escolha outro nome de tarefa"
+    # Base: --base, senão a do `up` (origin/master quando o master local não
+    # pôde avançar), senão a branch principal.
+    base="${base:-$(st "$run" '.base // ""')}"
+    base="${base:-$(st "$run" '.main')}"
+    git -C "$repo" rev-parse --verify -q "$base^{commit}" >/dev/null || die "base inexistente: $base"
+    if git -C "$repo" rev-parse --verify -q "refs/heads/$branch" >/dev/null; then
+      die "a branch $branch já existe; apague ou use outro nome de tarefa"
+    fi
+    mkdir -p -- "$root"
+    git -C "$repo" worktree add -q -b "$branch" "$wt" "$base" >&2
+    wt="$(cd -- "$wt" && pwd -P)"
+  fi
+  mkdir -p -- "$dir"
+  if [ "$(readlink -f -- "$spec")" != "$(readlink -f -- "$dir/spec.md" 2>/dev/null || true)" ]; then
+    cp -f -- "$spec" "$dir/spec.md"
+  fi
+
+  # O modelo fica na tarefa: a autorrevisão e a correção do mesmo dinossauro
+  # rodam no mesmo modelo da execução.
+  if [ "$exists" != true ]; then
+    st_update "$run" '.tasks[$t] = {index: ($i | tonumber), title: $title, dino: $d, model: $m, branch: $b, worktree: $w,
+        base: $base, base_sha: $sha, effort_level: $l, spec: $spec, dir: $dir, phase: "exec",
+        created_at: $at, tabs: [], history: []}' \
+      --arg t "$task" --arg i "$idx" --arg title "${title:-$task}" --arg d "$dino" --arg m "$model" --arg b "$branch" \
+      --arg w "$wt" --arg base "$base" --arg sha "$(git -C "$wt" rev-parse HEAD)" --arg l "$level" \
+      --arg spec "$dir/spec.md" --arg dir "$dir" --arg at "$(now)"
+  else
+    st_update "$run" '.tasks[$t].dino = $d | .tasks[$t].model = $m | .tasks[$t].effort_level = $l | .tasks[$t].phase = "exec"
+        | if $title != "" then .tasks[$t].title = $title else . end' \
+      --arg t "$task" --arg d "$dino" --arg m "$model" --arg l "$level" --arg title "$title"
+  fi
+
+  L_RUN="$run" L_TASK="$task" L_DINO="$dino" L_LEVEL="$level" L_KIND=exec
+  L_STEP="$(next_step "$run" "$task" exec)"
+  L_EXPECT="$dir/$L_STEP-report.md"
+  L_PROMPT="$(exec_prompt "$(tget "$run" "$task" '.title')" "$dir/spec.md" "$wt" "$branch" "$L_EXPECT")"
+  L_LABEL="${label:-$(lane_label "$run" "$task" exec "$dino")}"
+  L_MODEL="$model" L_WT="$wt" L_DIR="$dir" L_IDX="$idx" L_FP="" L_REUSE_TAB="" L_REUSE_PANE=""
+  launch_session
+}
+
+cmd_review() {
+  [ $# -ge 2 ] || die "uso: tropa review <run> <tarefa> [--dino <chave>]"
+  local run="$1" task="$2" dino="" level=max label="" force=0
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dino) dino="$2"; shift 2 ;;
+      --effort) level="$2"; shift 2 ;;
+      --label) label="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      --spec) shift 2 ;; # aceito por simetria; a spec é a da tarefa
+      *) die "review: opção desconhecida: $1" ;;
+    esac
+  done
+  need_task "$run" "$task"
+  [ "$(tget "$run" "$task" '.step.status')" != running ] || die "$task tem passo em andamento; espere antes de revisar"
+  local own kind wt dir model=""
+  own="$(tget "$run" "$task" '.dino')"
+  dino="${dino:-$own}"
+  need_dino "$dino"
+  if [ "$dino" = "$own" ]; then
+    kind=review
+    model="$(tget "$run" "$task" '.model')"
+  else
+    kind=cross
+  fi
+  check_capacity "$run" "$dino" "$task" "$force"
+  wt="$(tget "$run" "$task" '.worktree')"
+  dir="$(tget "$run" "$task" '.dir')"
+
+  L_RUN="$run" L_TASK="$task" L_DINO="$dino" L_LEVEL="$level" L_KIND="$kind"
+  L_STEP="$(next_step "$run" "$task" "$kind")"
+  L_EXPECT="$dir/$L_STEP-$dino.md"
+  L_PROMPT="$(review_prompt "$dir/spec.md" "$wt" "$(tget "$run" "$task" '.base_sha')" "$L_EXPECT")"
+  L_LABEL="${label:-$(lane_label "$run" "$task" "$kind" "$dino")}"
+  L_MODEL="$model" L_WT="$wt" L_DIR="$dir" L_IDX="$(tget "$run" "$task" '.index')"
+  L_FP="$(fingerprint "$wt")" L_REUSE_TAB="" L_REUSE_PANE=""
+  st_update "$run" '.tasks[$t].phase = $p' --arg t "$task" --arg p "$L_STEP"
+  launch_session
+}
+
+cmd_fix() {
+  [ $# -ge 2 ] || die "uso: tropa fix <run> <tarefa> --file <achados.md> [--dino <chave>]"
+  local run="$1" task="$2" file="" level="" fdino="" force=0
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) file="$2"; shift 2 ;;
+      --effort) level="$2"; shift 2 ;;
+      --dino) fdino="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) die "fix: opção desconhecida: $1" ;;
+    esac
+  done
+  need_task "$run" "$task"
+  [ -n "$file" ] && [ -s "$file" ] || die "fix: --file precisa apontar para os achados"
+  [ "$(tget "$run" "$task" '.step.status')" != running ] || die "$task tem passo em andamento"
+  local own dino other="" wt dir step fixes expect prompt model=""
+  own="$(tget "$run" "$task" '.dino')"
+  dino="${fdino:-$own}"
+  need_dino "$dino"
+  if [ "$dino" != "$own" ]; then other=1; fi
+  check_capacity "$run" "$dino" "$task" "$force"
+  wt="$(tget "$run" "$task" '.worktree')"
+  dir="$(tget "$run" "$task" '.dir')"
+  if [ -n "$other" ]; then
+    level="${level:-exec}"
+  else
+    level="${level:-$(tget "$run" "$task" '.effort_level')}"
+    model="$(tget "$run" "$task" '.model')"
+  fi
+  step="$(next_step "$run" "$task" fix)"
+  fixes="$dir/${step/fix/fixes-}.md"
+  cp -f -- "$file" "$fixes"
+  expect="$dir/$step-report.md"
+  prompt="$(fix_prompt "$fixes" "$wt" "$dir/spec.md" "$expect" "$(tget "$run" "$task" '.base_sha')" "$other")"
+
+  # O executor ainda aberto no TUI recebe a correção na mesma sessão: ele já
+  # leu o código. Se morreu, o painel volta ao shell e abre uma sessão nova
+  # ali mesmo; sem painel, uma aba nova. Correção por outro dinossauro
+  # (--dino) sempre abre aba nova, com a conta dele.
+  local agent="" tab="" pane=""
+  if [ -z "$other" ]; then
+    IFS=$'\x1f' read -r agent tab pane < <(st "$run" '[.tasks[$t].tabs // [] | .[] | select(.step | test("^(exec|fix)"))] | last // {} | [.agent // "", .tab // "", .pane // ""] | join("\u001f")' --arg t "$task") || true
+  fi
+  if [ -n "${agent:-}" ] && uses_herdr "$run" && hcall agent get "$agent" \
+    && [ "$(jq -r '.result.agent.agent_status // "unknown"' <<<"$HOUT")" != unknown ]; then
+    local status=running sent=true err="" promptf="$dir/$step-prompt.txt"
+    printf '%s\n' "$prompt" >"$promptf"
+    if ! hcall agent prompt "$agent" "$prompt" --wait --until working --until "done" --until blocked --timeout 120000; then
+      err="$(herr)"
+      warn "agent prompt $agent: $(herr_msg). Leia a tela (tropa read $run $task); depois: tropa unblock $run $task"
+      status=blocked sent=false
+    elif [ "$(jq -r '.result.agent.agent_status // empty' <<<"$HOUT" 2>/dev/null || true)" = blocked ]; then
+      status=blocked
+    fi
+    local stepjson
+    stepjson="$(jq -n --arg name "$step" --arg dino "$dino" --arg agent "$agent" --arg tab "$tab" --arg pane "$pane" \
+      --arg expect "$expect" --arg status "$status" --arg at "$(now)" --argjson epoch "$(date +%s)" \
+      --arg effort "$(resolve_effort "$dino" "$level")" --arg model "${model:-$(rget "$dino" '.model')}" \
+      --arg promptf "$promptf" --argjson sent "$sent" --arg err "$err" \
+      '{name: $name, kind: "fix", dino: $dino, mode: "agent", agent: $agent, tab: $tab, pane: $pane,
+        expect: $expect, last: "", rc: "", log: "", effort: $effort, model: $model, status: $status, fingerprint: "",
+        session: "", started_at: $at, started_epoch: $epoch, reused_pane: true, prompt_file: $promptf,
+        prompt_sent: $sent, pid_file: "", error: $err}')"
+    st_update "$run" '.tasks[$t].step = $s | .tasks[$t].history += [$s] | .tasks[$t].phase = $s.name
+        | .tasks[$t].tabs |= map(if .agent == $s.agent then .step = $s.name else . end)' \
+      --arg t "$task" --argjson s "$stepjson"
+    jq -n --argjson s "$stepjson" --arg task "$task" '{task: $task, step: $s.name, dino: $s.dino, mode: "agent", agent: $s.agent, expect: $s.expect, status: $s.status, prompt_sent: $s.prompt_sent, same_session: true}'
+    ws_tokens "$run"
+    if [ "$status" = blocked ]; then return "$EXIT_BLOCKED"; fi
+    return 0
+  fi
+
+  L_RUN="$run" L_TASK="$task" L_DINO="$dino" L_LEVEL="$level" L_KIND=fix L_STEP="$step"
+  L_EXPECT="$expect" L_PROMPT="$prompt" L_LABEL="$(lane_label "$run" "$task" fix "$dino")"
+  L_MODEL="$model" L_WT="$wt" L_DIR="$dir" L_IDX="$(tget "$run" "$task" '.index')" L_FP=""
+  L_REUSE_TAB="" L_REUSE_PANE=""
+  if [ -z "$other" ] && [ -n "${pane:-}" ] && uses_herdr "$run" && hcall pane get "$pane"; then
+    L_REUSE_TAB="$tab" L_REUSE_PANE="$pane"
+  fi
+  st_update "$run" '.tasks[$t].phase = $p' --arg t "$task" --arg p "$step"
+  launch_session
+}
+
+# runner_gone <pidfile> <runner> <started_epoch> <rcfile>: o passo headless
+# morreu sem gravar o .rc (sessão do Claude que caiu, kill, reboot), ou nunca
+# começou.
+runner_gone() {
+  local pid
+  if [ -s "$1" ]; then
+    pid="$(tr -dc '0-9' <"$1")"
+    [ -n "$pid" ] || return 1
+    if kill -0 "$pid" 2>/dev/null; then
+      # pid vivo: confere que ainda é o runner, e não um pid reaproveitado
+      if [ ! -r "/proc/$pid/cmdline" ] || tr '\0' ' ' <"/proc/$pid/cmdline" | grep -qF -- "$2"; then return 1; fi
+    fi
+    # o runner pode ter gravado o .rc entre uma checagem e outra
+    [ -s "$4" ] && return 1
+    return 0
+  fi
+  [ -n "$3" ] && [ $(($(date +%s) - $3)) -gt "$START_GRACE" ]
+}
+
+cmd_wait() {
+  [ $# -ge 2 ] || die "uso: tropa wait <run> <tarefa> [--timeout <ms>] [--close]"
+  local run="$1" task="$2" timeout=5400000 close=0
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --timeout) timeout="$2"; shift 2 ;;
+      --close) close=1; shift ;;
+      *) die "wait: opção desconhecida: $1" ;;
+    esac
+  done
+  need_task "$run" "$task"
+  local mode agent rcf expect last kind fp wt tab step sent pidf epoch
+  mode="$(tget "$run" "$task" '.step.mode')"
+  agent="$(tget "$run" "$task" '.step.agent')"
+  rcf="$(tget "$run" "$task" '.step.rc')"
+  expect="$(tget "$run" "$task" '.step.expect')"
+  last="$(tget "$run" "$task" '.step.last')"
+  kind="$(tget "$run" "$task" '.step.kind')"
+  fp="$(tget "$run" "$task" '.step.fingerprint')"
+  tab="$(tget "$run" "$task" '.step.tab')"
+  step="$(tget "$run" "$task" '.step.name')"
+  pidf="$(tget "$run" "$task" '.step.pid_file')"
+  epoch="$(tget "$run" "$task" '.step.started_epoch')"
+  sent="$(st "$run" '.tasks[$t].step.prompt_sent' --arg t "$task")"
+  wt="$(tget "$run" "$task" '.worktree')"
+  [ -n "$step" ] || die "$task não tem passo para esperar"
+
+  local status="" agent_status="" rc="" pending=false
+  if [ "$mode" = agent ]; then
+    # Sempre pergunta ao herdr: a tela pode ter sido respondida desde a última
+    # espera. Só o prompt que nunca chegou não se resolve sozinho.
+    if [ "$sent" = false ]; then
+      pending=true
+      if hcall agent get "$agent"; then
+        agent_status="$(jq -r '.result.agent.agent_status // "unknown"' <<<"$HOUT")"
+      else
+        agent_status=gone
+      fi
+      status=blocked
+    else
+      local -a wargs=(agent wait "$agent")
+      if [ "$timeout" -gt 0 ]; then wargs+=(--timeout "$timeout"); fi
+      hcall "${wargs[@]}" || true
+      if hcall agent get "$agent"; then
+        agent_status="$(jq -r '.result.agent.agent_status // "unknown"' <<<"$HOUT")"
+      else
+        agent_status=gone
+      fi
+      case "$agent_status" in
+        working) status=timeout ;;
+        blocked) status=blocked ;;
+        *) status=settled ;;
+      esac
+    fi
+  else
+    local deadline=$((SECONDS + timeout / 1000))
+    while [ ! -s "$rcf" ]; do
+      if runner_gone "$pidf" "${rcf%.rc}.sh" "$epoch" "$rcf"; then
+        status=gone
+        break
+      fi
+      if [ "$timeout" -gt 0 ] && [ "$SECONDS" -ge "$deadline" ]; then
+        status=timeout
+        break
+      fi
+      sleep "$POLL_SECONDS"
+    done
+    if [ -s "$rcf" ]; then
+      rc="$(tr -d '[:space:]' <"$rcf")"
+      status=exited
+    fi
+  fi
+
+  local report="" code=0 tainted=false
+  if [ -n "$expect" ] && [ -s "$expect" ]; then
+    report="$expect"
+  elif [ -n "$last" ] && [ -s "$last" ]; then
+    report="$last"
+  fi
+  if [ "$status" = timeout ]; then
+    code=$EXIT_TIMEOUT
+  elif [ "$status" = blocked ]; then
+    code=$EXIT_BLOCKED
+  elif [ -n "$report" ]; then
+    status=finished
+  elif [ "$status" = gone ]; then
+    status="runner-gone"
+    code=$EXIT_FAILED
+  elif [ "$status" = exited ] && { [ "$rc" = 124 ] || [ "$rc" = 137 ]; }; then
+    status="timed-out"
+    code=$EXIT_TIMEOUT
+  elif [ "$status" = exited ] && [ "$rc" != 0 ]; then
+    status=failed
+    code=$EXIT_FAILED
+  else
+    status="no-report"
+    code=$EXIT_NOREPORT
+  fi
+  if { [ "$kind" = review ] || [ "$kind" = cross ]; } && [ -n "$fp" ] && [ "$(fingerprint "$wt")" != "$fp" ]; then
+    tainted=true
+    if [ "$code" = 0 ]; then
+      status=tainted
+      code=$EXIT_TAINTED
+    fi
+  fi
+
+  local upd
+  upd="$(jq -n --arg status "$status" --arg as "$agent_status" --arg rc "$rc" --arg report "$report" \
+    --argjson tainted "$tainted" --arg at "$(now)" \
+    '{status: $status, agent_status: $as, exit_rc: $rc, report: $report, tainted: $tainted, finished_at: $at}')"
+  if [ "$status" = timeout ]; then
+    upd="$(jq '.status = "running" | .last_wait = "timeout"' <<<"$upd")"
+  fi
+  st_update "$run" '.tasks[$t].step += $u | .tasks[$t].history |= (.[:-1] + [(.[-1] + $u)])' \
+    --arg t "$task" --argjson u "$upd"
+
+  if [ "$close" = 1 ] && [ -n "$tab" ] && { [ "$kind" = review ] || [ "$kind" = cross ]; } \
+    && [ "$status" != timeout ] && [ "$status" != blocked ]; then
+    close_tab "$run" "$task" "$tab"
+  fi
+  ws_tokens "$run"
+  local hint=""
+  if [ "$pending" = true ]; then
+    hint="o prompt nunca chegou ao agente: leia a tela (tropa read), responda (herdr agent send-keys) e rode tropa unblock $run $task"
+  elif [ "$status" = blocked ]; then
+    hint="travado numa tela: leia (tropa read), responda (herdr agent send-keys) e espere de novo"
+  elif [ "$status" = runner-gone ]; then
+    hint="o processo do passo sumiu sem gravar o código de saída; leia o log e mande de novo"
+  fi
+  jq -n --arg task "$task" --arg step "$step" --arg status "$status" --argjson code "$code" \
+    --arg as "$agent_status" --arg rc "$rc" --arg report "$report" --argjson tainted "$tainted" \
+    --arg log "$(tget "$run" "$task" '.step.log')" --argjson pending "$pending" --arg hint "$hint" \
+    '{task: $task, step: $step, status: $status, code: $code, agent_status: $as, rc: $rc,
+      report: $report, log: $log, tainted: $tainted, prompt_pending: $pending}
+      + (if $hint == "" then {} else {hint: $hint} end)'
+  return "$code"
+}
+
+# unblock: depois de responder a tela, manda o prompt que não chegou (o texto
+# está em <passo>-prompt.txt) ou só marca o passo como em campo de novo.
+cmd_unblock() {
+  [ $# -ge 2 ] || die "uso: tropa unblock <run> <tarefa>"
+  local run="$1" task="$2"
+  need_task "$run" "$task"
+  [ "$(tget "$run" "$task" '.step.mode')" = agent ] || die "o passo atual de $task não é interativo; use tropa read e tropa wait"
+  local agent live sent promptf resent=false
+  agent="$(tget "$run" "$task" '.step.agent')"
+  sent="$(st "$run" '.tasks[$t].step.prompt_sent' --arg t "$task")"
+  promptf="$(tget "$run" "$task" '.step.prompt_file')"
+  hcall agent get "$agent" || die "o agente $agent sumiu ($(herr_msg)); recolha (tropa recall $run $task) e mande de novo"
+  live="$(jq -r '.result.agent.agent_status // "unknown"' <<<"$HOUT")"
+  if [ "$live" = blocked ]; then
+    warn "$agent continua travado numa tela; responda com herdr agent send-keys $agent <tecla> e rode de novo"
+    jq -n --arg t "$task" --arg a "$agent" '{task: $t, agent: $a, status: "blocked", live: "blocked"}'
+    return "$EXIT_BLOCKED"
+  fi
+  if [ "$sent" = false ] && [ "$live" != working ]; then
+    [ -s "$promptf" ] || die "o prompt do passo não está em $promptf"
+    if ! hcall agent prompt "$agent" "$(cat -- "$promptf")" --wait --until working --until "done" --until blocked --timeout 120000; then
+      warn "agent prompt $agent: $(herr_msg)"
+      st_update "$run" '.tasks[$t].step.error = $e' --arg t "$task" --arg e "$(herr)"
+      jq -n --arg t "$task" --arg a "$agent" '{task: $t, agent: $a, status: "blocked", resent: false}'
+      return "$EXIT_BLOCKED"
+    fi
+    resent=true
+    live="$(jq -r '.result.agent.agent_status // "unknown"' <<<"$HOUT" 2>/dev/null || echo unknown)"
+  fi
+  local status=running
+  if [ "$live" = blocked ]; then status=blocked; fi
+  st_update "$run" '.tasks[$t].step += {status: $s, prompt_sent: true, error: ""}
+      | .tasks[$t].history |= (.[:-1] + [(.[-1] + {status: $s, prompt_sent: true, error: ""})])' \
+    --arg t "$task" --arg s "$status"
+  ws_tokens "$run"
+  jq -n --arg t "$task" --arg a "$agent" --arg s "$status" --argjson r "$resent" '{task: $t, agent: $a, status: $s, resent: $r}'
+  if [ "$status" = blocked ]; then return "$EXIT_BLOCKED"; fi
+}
+
+cmd_prompt() {
+  [ $# -ge 3 ] || die "uso: tropa prompt <run> <tarefa> [--exec|--resend] <texto>"
+  local run="$1" task="$2" agent=""
+  shift 2
+  need_task "$run" "$task"
+  if [ "$1" = --resend ]; then
+    cmd_unblock "$run" "$task"
+    return
+  fi
+  if [ "$1" = --exec ]; then
+    shift
+    agent="$(st "$run" '[.tasks[$t].tabs // [] | .[] | select(.step | test("^(exec|fix)"))] | last // {} | .agent // empty' --arg t "$task")"
+  else
+    [ "$(tget "$run" "$task" '.step.mode')" = agent ] || die "o passo atual de $task não é interativo; não há a quem mandar texto"
+    agent="$(tget "$run" "$task" '.step.agent')"
+  fi
+  [ -n "$agent" ] || die "nenhum agente interativo vivo em $task"
+  hcall agent prompt "$agent" "$*" --wait --until working --until "done" --until blocked --timeout 120000 \
+    || die "agent prompt $agent: $(herr_msg)"
+  st_update "$run" '.tasks[$t].step.status = "running"' --arg t "$task"
+  jq -c '{agent: .result.agent.name, status: .result.agent.agent_status}' <<<"$HOUT" 2>/dev/null || true
+}
+
+cmd_read() {
+  [ $# -ge 2 ] || die "uso: tropa read <run> <tarefa> [--lines <n>]"
+  local run="$1" task="$2" lines=60
+  shift 2
+  if [ "${1:-}" = --lines ]; then lines="$2"; fi
+  need_task "$run" "$task"
+  local mode agent pane log
+  mode="$(tget "$run" "$task" '.step.mode')"
+  agent="$(tget "$run" "$task" '.step.agent')"
+  pane="$(tget "$run" "$task" '.step.pane')"
+  log="$(tget "$run" "$task" '.step.log')"
+  case "$mode" in
+    agent) "$HERDR" agent read "$agent" --source visible ;;
+    pane)
+      "$HERDR" pane read "$pane" --source visible || true
+      if [ -f "$log" ]; then echo "--- log ($log) ---"; tail -n "$lines" -- "$log"; fi
+      ;;
+    *) if [ -f "$log" ]; then tail -n "$lines" -- "$log"; else echo "(sem log ainda)"; fi ;;
+  esac
+}
+
+# lane_files <worktree> <base_sha>: tudo o que a lane mudou desde a base,
+# commitado ou não, mais os arquivos novos não rastreados. É a medida certa
+# para diff vazio e escopo: um dinossauro que commitou some do `git status`.
+lane_files() {
+  local base="${2:-HEAD}"
+  {
+    git -C "$1" diff --name-only "$base" 2>/dev/null
+    git -C "$1" ls-files -o --exclude-standard 2>/dev/null
+  } | sort -u
+}
+
+cmd_status() {
+  [ $# -ge 1 ] || die "uso: tropa status <run> [tarefa] [--json]"
+  local run="$1" only="" json=0
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) only="$1"; shift ;;
+    esac
+  done
+  need_run "$run"
+  local rows="[]" task live changed step_agent exec_agent
+  while IFS= read -r task; do
+    [ -n "$task" ] || continue
+    if [ -n "$only" ] && [ "$task" != "$only" ]; then continue; fi
+    live=""
+    step_agent="$(tget "$run" "$task" '.step.agent')"
+    if uses_herdr "$run" && [ "$(tget "$run" "$task" '.step.mode')" = agent ]; then
+      if hcall agent get "$step_agent"; then
+        live="$(jq -r '.result.agent.agent_status // ""' <<<"$HOUT")"
+      else
+        live=gone
+      fi
+    fi
+    # A aba da revisão fecha no fim dela; o executor continua aberto e é ele
+    # que interessa no placar.
+    if uses_herdr "$run" && { [ -z "$live" ] || [ "$live" = gone ]; }; then
+      exec_agent="$(st "$run" '[.tasks[$t].tabs // [] | .[] | select(.step | test("^(exec|fix)"))] | last // {} | .agent // empty' --arg t "$task")"
+      if [ -n "$exec_agent" ] && [ "$exec_agent" != "$step_agent" ] && hcall agent get "$exec_agent"; then
+        live="exec:$(jq -r '.result.agent.agent_status // "?"' <<<"$HOUT")"
+      fi
+    fi
+    changed="$(lane_files "$(tget "$run" "$task" '.worktree')" "$(tget "$run" "$task" '.base_sha')" | grep -c . || true)"
+    rows="$(jq --argjson t "$(st "$run" '.tasks[$k] + {task: $k}' --arg k "$task")" --arg live "$live" --arg ch "$changed" \
+      --slurpfile r "$ROSTER" \
+      '. + [{task: $t.task, title: $t.title, dino: $t.dino,
+             account: ($r[0].dinos[($t.step.dino // $t.dino)].account // ($t.step.dino // $t.dino)),
+             phase: ($t.phase // ""), step: ($t.step.name // ""), step_dino: ($t.step.dino // ""),
+             status: ($t.step.status // ""), mode: ($t.step.mode // ""), agent: ($t.step.agent // ""),
+             live: $live, changed_files: ($ch | tonumber? // 0), report: ($t.step.report // ""),
+             worktree: $t.worktree, branch: $t.branch}]' <<<"$rows")"
+  done < <(st "$run" '.tasks | to_entries | sort_by(.value.index) | .[].key')
+  if [ "$json" = 1 ]; then
+    jq . <<<"$rows"
+    return 0
+  fi
+  {
+    printf 'TAREFA\tDINO\tCONTA\tFASE\tPASSO\tSTATUS\tAO VIVO\tARQS\n'
+    jq -r '.[] | [.title, .dino, .account, .phase, .step, .status, (if .live == "" then "-" else .live end), (.changed_files | tostring)] | @tsv' <<<"$rows"
+  } | column -t -s $'\t'
+}
+
+# changes: o que a lane mudou desde base_sha. --scope recebe os globs da seção
+# Scope da spec (separados por espaço ou vírgula) e lista o que caiu fora.
+cmd_changes() {
+  [ $# -ge 2 ] || die "uso: tropa changes <run> <tarefa> [--scope \"<glob> <glob>...\"]"
+  local run="$1" task="$2" scope=""
+  shift 2
+  if [ "${1:-}" = --scope ]; then scope="${2:-}"; fi
+  need_task "$run" "$task"
+  local wt base files untracked commits out="[]" f p ok scoped=false
+  wt="$(tget "$run" "$task" '.worktree')"
+  base="$(tget "$run" "$task" '.base_sha')"
+  [ -d "$wt" ] || die "a worktree de $task sumiu: $wt"
+  files="$(lane_files "$wt" "$base" | jq -R . | jq -s .)"
+  untracked="$(git -C "$wt" ls-files -o --exclude-standard | jq -R . | jq -s .)"
+  commits="$(git -C "$wt" log --format='%h %s' "${base:-HEAD}..HEAD" | jq -R . | jq -s .)"
+  if [ -n "$scope" ]; then
+    scoped=true
+    local -a pats=()
+    read -r -a pats <<<"${scope//,/ }"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      ok=0
+      for p in "${pats[@]}"; do
+        # glob de propósito: o padrão vem da Scope da spec
+        # shellcheck disable=SC2053
+        if [[ "$f" == $p ]] || [[ "$f" == "${p%/}"/* ]]; then ok=1; break; fi
+      done
+      if [ "$ok" = 0 ]; then out="$(jq --arg f "$f" '. + [$f]' <<<"$out")"; fi
+    done < <(lane_files "$wt" "$base")
+  fi
+  jq -n --arg t "$task" --arg wt "$wt" --arg b "$base" --argjson c "$commits" --argjson f "$files" \
+    --argjson u "$untracked" --argjson o "$out" --argjson s "$scoped" \
+    '{task: $t, worktree: $wt, base_sha: $b, commits: $c, files: $f, untracked: $u, empty: ($f | length == 0)}
+      + (if $s then {out_of_scope: $o} else {} end)'
+}
+
+# slots: passos em campo contra o `max` da run, com a conta de cada um.
+cmd_slots() {
+  [ $# -ge 1 ] || die "uso: tropa slots <run>"
+  need_run "$1"
+  st "$1" '(.max // 4) as $m
+    | [.tasks | to_entries[] | select(.value.step.status == "running")
+       | {task: .key, step: .value.step.name, kind: .value.step.kind, dino: .value.step.dino,
+          account: ($r[0].dinos[.value.step.dino].account // .value.step.dino), since: .value.step.started_at}] as $busy
+    | {max: $m, used: ($busy | length), free: ([$m - ($busy | length), 0] | max), running: $busy}' --slurpfile r "$ROSTER"
+}
+
+cmd_board() {
+  [ $# -ge 1 ] || die "uso: tropa board <run>"
+  local run="$1" i=0 label phrase
+  need_run "$run"
+  label="$(st "$run" '.workspace.label')"
+  while [ "$(st "$run" '.closed')" != true ]; do
+    phrase="$(meme_pick catchphrases "$i")"
+    printf '\033[H\033[2J'
+    printf '%s  |  run %s  |  %s\n\n' "$label" "$run" "$phrase"
+    cmd_status "$run" || true
+    printf '\n(atualiza a cada %ss; o Flávio comanda pela sessão do Claude)\n' "${TROPA_BOARD_SECONDS:-20}"
+    i=$((i + 1))
+    sleep "${TROPA_BOARD_SECONDS:-20}"
+  done
+  echo "Run $run encerrada. Missão dada é missão cumprida."
+}
+
+cmd_mark() {
+  [ $# -ge 3 ] || die "uso: tropa mark <run> <tarefa> <fase> [--note <texto>]"
+  local run="$1" task="$2" phase="$3" note=""
+  shift 3
+  if [ "${1:-}" = --note ]; then note="$2"; fi
+  need_task "$run" "$task"
+  st_update "$run" '.tasks[$t].phase = $p | .tasks[$t].phase_note = $n | .tasks[$t].phase_at = $at' \
+    --arg t "$task" --arg p "$phase" --arg n "$note" --arg at "$(now)"
+  ws_tokens "$run"
+}
+
+cmd_say() {
+  [ $# -ge 2 ] || die "uso: tropa say <run> <evento> [tarefa]"
+  local run="$1" event="$2" task="${3:-}"
+  need_run "$run"
+  local len n idx=0 dino="a tropa" title="o backlog" line
+  len="$(jq -r --arg e "$event" '.event_lines[$e] // [] | length' "$MEMES")"
+  [ "$len" -gt 0 ] || die "evento sem falas: $event"
+  n="$(st "$run" '.counters[$e] // 0' --arg e "$event")"
+  st_update "$run" '.counters[$e] = ((.counters[$e] // 0) + 1)' --arg e "$event"
+  if [ -n "$task" ] && [ "$(st "$run" '.tasks[$t] != null' --arg t "$task")" = true ]; then
+    idx="$(tget "$run" "$task" '.index')"
+    dino="$(nick "$(tget "$run" "$task" '.dino')")"
+    title="$(tget "$run" "$task" '.title')"
+  elif [ -n "$task" ]; then
+    title="$task"
+  fi
+  line="$(jq -r --arg e "$event" --argjson i "$(((n + idx) % len))" '.event_lines[$e][$i]' "$MEMES")"
+  line="${line//\{dino\}/$dino}"
+  printf '%s\n' "${line//\{task\}/$title}"
+}
+
+cmd_notify() {
+  [ $# -ge 2 ] || die "uso: tropa notify <run> <mensagem> [--title <título>]"
+  local run="$1" msg="$2" title=""
+  shift 2
+  if [ "${1:-}" = --title ]; then title="$2"; fi
+  need_run "$run"
+  title="${title:-$(st "$run" '.workspace.label')}"
+  if uses_herdr "$run"; then
+    # Com os toasts desligados o herdr responde shown:false; o token do
+    # workspace na barra lateral é o que sempre aparece.
+    hcall notification show "$title" --body "$msg" --position top-right --sound "done" || true
+    hcall workspace report-metadata "$(st "$run" '.workspace.id')" --source tropa --token "status=${msg:0:60}" || true
+  fi
+  printf '%s\n' "$msg"
+}
+
+cmd_recall() {
+  [ $# -ge 2 ] || die "uso: tropa recall <run> <tarefa>"
+  local run="$1" task="$2" tab
+  need_task "$run" "$task"
+  if uses_herdr "$run"; then
+    while IFS= read -r tab; do
+      [ -n "$tab" ] || continue
+      close_tab "$run" "$task" "$tab"
+    done < <(st "$run" '[.tasks[$t].tabs // [] | .[].tab] | unique | .[]' --arg t "$task")
+  fi
+  st_update "$run" '.tasks[$t].recalled_at = $at
+    | if .tasks[$t].step.status == "running" then .tasks[$t].step.status = "recalled" else . end' \
+    --arg t "$task" --arg at "$(now)"
+  ws_tokens "$run"
+  jq -n --arg t "$task" '{task: $t, recalled: true}'
+}
+
+# Remove a worktree e apaga a branch só quando ela já está no master. Uma lane
+# não mergeada (o dinossauro nunca commita, então o trabalho dela é alteração
+# não commitada) faz o `worktree remove` recusar, e fica tudo onde está.
+cmd_clean() {
+  [ $# -ge 2 ] || die "uso: tropa clean <run> <tarefa> [--force]"
+  local run="$1" task="$2" force=0
+  shift 2
+  if [ "${1:-}" = --force ]; then force=1; fi
+  need_task "$run" "$task"
+  if [ "$(st "$run" '.tasks[$t].tabs // [] | length' --arg t "$task")" != 0 ]; then
+    cmd_recall "$run" "$task" >/dev/null
+  fi
+  local repo wt branch main removed=false deleted=false
+  repo="$(st "$run" '.repo')"
+  main="$(st "$run" '.main')"
+  wt="$(tget "$run" "$task" '.worktree')"
+  branch="$(tget "$run" "$task" '.branch')"
+  if [ -d "$wt" ]; then
+    if [ "$force" = 1 ]; then
+      git -C "$repo" worktree remove --force "$wt"
+    else
+      git -C "$repo" worktree remove "$wt" || die "a worktree $wt tem alterações; revise ou use --force para descartar"
+    fi
+    untrust_kimi "$wt"
+    removed=true
+  fi
+  if git -C "$repo" rev-parse --verify -q "refs/heads/$branch" >/dev/null; then
+    if git -C "$repo" merge-base --is-ancestor "$branch" "$main"; then
+      git -C "$repo" branch -D "$branch" >/dev/null
+      deleted=true
+    else
+      warn "a branch $branch não está no $main; mantida"
+    fi
+  fi
+  st_update "$run" '.tasks[$t].cleaned = {worktree: $r, branch: $d, at: $at}' \
+    --arg t "$task" --argjson r "$removed" --argjson d "$deleted" --arg at "$(now)"
+  jq -n --arg t "$task" --argjson r "$removed" --argjson d "$deleted" '{task: $t, worktree_removed: $r, branch_deleted: $d}'
+}
+
+cmd_down() {
+  [ $# -ge 1 ] || die "uso: tropa down <run> [--keep-worktrees]"
+  local run="$1" keep=0
+  shift
+  if [ "${1:-}" = --keep-worktrees ]; then keep=1; fi
+  need_run "$run"
+  local repo main task wt branch cleaned="[]" kept="[]"
+  repo="$(st "$run" '.repo')"
+  main="$(st "$run" '.main')"
+  while IFS= read -r task; do
+    [ -n "$task" ] || continue
+    cmd_recall "$run" "$task" >/dev/null
+    wt="$(tget "$run" "$task" '.worktree')"
+    branch="$(tget "$run" "$task" '.branch')"
+    [ -d "$wt" ] || continue
+    if [ "$keep" = 0 ] && [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] \
+      && git -C "$repo" merge-base --is-ancestor "$branch" "$main" 2>/dev/null; then
+      cmd_clean "$run" "$task" >/dev/null
+      cleaned="$(jq --arg t "$task" '. + [$t]' <<<"$cleaned")"
+    else
+      kept="$(jq --arg t "$task" --arg w "$wt" '. + [{task: $t, worktree: $w}]' <<<"$kept")"
+    fi
+  done < <(st "$run" '.tasks | keys[]')
+
+  local closed=false refocused=false
+  if uses_herdr "$run"; then
+    local ws focused was_focused=false before_alive=false
+    ws="$(st "$run" '.workspace.id')"
+    focused="$(st "$run" '.workspace.focused_before')"
+    # Fechar um workspace sem foco não mexe no foco (conferido no herdr 0.8.2).
+    # Só quando o Andre está olhando o workspace da tropa o foco vai parar no
+    # vizinho; aí ele volta para onde estava no `up`, se ainda existir.
+    if [ -n "$ws" ] && hcall workspace list; then
+      [ "$(jq -r --arg w "$ws" '[.result.workspaces[]? | select(.focused == true) | .workspace_id] | index($w) != null' <<<"$HOUT")" = true ] \
+        && was_focused=true
+      [ -n "$focused" ] && [ "$(jq -r --arg w "$focused" '[.result.workspaces[]?.workspace_id] | index($w) != null' <<<"$HOUT")" = true ] \
+        && before_alive=true
+    fi
+    if [ -n "$ws" ] && hcall workspace close "$ws"; then closed=true; fi
+    if [ "$was_focused" = true ] && [ "$before_alive" = true ] && [ "$focused" != "$ws" ]; then
+      hcall workspace focus "$focused" && refocused=true
+    fi
+  fi
+  st_update "$run" '.closed = true | .closed_at = $at' --arg at "$(now)"
+  jq -n --argjson c "$cleaned" --argjson k "$kept" --argjson w "$closed" --argjson f "$refocused" \
+    '{workspace_closed: $w, refocused: $f, cleaned: $c, kept: $k}'
+}
+
+cmd_roster() {
+  local json=0
+  if [ "${1:-}" = --json ]; then json=1; fi
+  [ -f "$ROSTER" ] || die "roster ausente: $ROSTER"
+  local rows="[]" key enabled auth usage quota login state
+  while IFS= read -r key; do
+    enabled="$(jq -r --arg k "$key" '.dinos[$k].enabled != false' "$ROSTER")"
+    auth="$(expand "$(rget "$key" '.auth')")"
+    login=false
+    if [ -n "$auth" ] && [ -e "$auth" ]; then login=true; fi
+    usage="$(rget "$key" '.usage')"
+    quota=""
+    if [ -n "$usage" ] && [ -f "$USAGE_DIR/$usage" ]; then
+      quota="$(jq -r '[.limits[]?.percent // 0] | max // 0' "$USAGE_DIR/$usage" 2>/dev/null || true)"
+    fi
+    if [ "$enabled" != true ]; then state=desligado
+    elif [ "$login" != true ]; then state=sem-login
+    elif [ -n "$quota" ] && awk -v q="$quota" -v m="$QUOTA_MAX" 'BEGIN { exit !(q >= m) }'; then state=sem-cota
+    else state=ok; fi
+    rows="$(jq --arg k "$key" --arg n "$(nick "$key")" --arg s "$state" --arg q "$quota" \
+      --argjson d "$(jq --arg k "$key" '.dinos[$k]' "$ROSTER")" \
+      '. + [{dino: $k, nickname: $n, state: $s, quota: ($q | tonumber? // null), tier: $d.tier,
+             account: $d.account, kind: ($d.kind // "pane"), model: $d.model, effort: $d.effort,
+             cross_required: ($d.cross_required // false)}]' <<<"$rows")"
+  done < <(jq -r '.dinos | keys_unsorted[]' "$ROSTER")
+  if [ "$json" = 1 ]; then
+    jq . <<<"$rows"
+    return 0
+  fi
+  {
+    printf 'DINO\tAPELIDO\tESTADO\tCOTA\tNIVEL\tMODELO\tEXEC/HARD/MAX\n'
+    jq -r '.[] | [.dino, .nickname, .state, (if .quota == null then "-" else ((.quota * 100 | floor | tostring) + "%") end),
+      .tier, .model, "\(.effort.exec)/\(.effort.hard)/\(.effort.max)"] | @tsv' <<<"$rows"
+  } | column -t -s $'\t'
+}
+
+# answer_ok <log> <última mensagem>: a resposta do smoke foi "OK"? O Codex grava
+# a última mensagem com -o; nos outros, procura uma string "OK" sozinha no log
+# (linha JSON, JSON indentado ou texto). O prompt ecoado no log ("Reply with
+# exactly: OK", que o codex exec e o muse repetem) não casa.
+answer_ok() {
+  if [ -s "$2" ]; then
+    [ "$(tr -d '[:space:].' <"$2")" = OK ]
+    return
+  fi
+  [ -s "$1" ] || return 1
+  {
+    jq -R 'fromjson? | .. | strings' "$1" 2>/dev/null || true
+    jq '.. | strings' "$1" 2>/dev/null || true
+    grep -vE '^[[:space:]]*[{[]' "$1" | jq -R . || true
+  } | jq -es 'map(gsub("^[\\s•*>-]+|[\\s.]+$"; "")) | any(. == "OK")' >/dev/null 2>&1
+}
+
+cmd_smoke() {
+  [ $# -ge 1 ] || die "uso: tropa smoke <dino> [--effort exec|max|<valor>]"
+  local dino="$1" level=exec
+  shift
+  if [ "${1:-}" = --effort ]; then level="$2"; fi
+  need_dino "$dino"
+  local dir log started rc=0 ok=false bin guard=false
+  dir="$STATE_ROOT/_smoke/$dino-$$"
+  log="$STATE_ROOT/_smoke/$dino-$level.log"
+  mkdir -p -- "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" -c user.name=tropa -c user.email=tropa@localhost commit -q --allow-empty -m smoke
+  X_WT="$(cd -- "$dir" && pwd -P)"
+  X_EFFORT="$(resolve_effort "$dino" "$level")"
+  X_MODEL="$(rget "$dino" '.model')"
+  X_PROMPT="Reply with exactly: OK"
+  X_OUT="$dir/.last"
+  local -a envs=() args=() genv=() gpath=()
+  mapfile -d '' -t envs < <(dino_env "$dino")
+  mapfile -d '' -t args < <(dino_args "$dino" headless)
+  ensure_env_dirs "${envs[@]}"
+  # O smoke roda com a guarda, como os passos de verdade: prova que o CLI sobe
+  # com os wrappers na frente e com as variáveis da guarda.
+  if guard_on "$dino"; then
+    guard=true
+    ensure_guard
+    mapfile -d '' -t genv < <(guard_env)
+    gpath=("PATH=$GUARD_DIR:$PATH")
+  fi
+  bin="$(expand "$(rget "$dino" '.headless.bin')")"
+  started=$SECONDS
+  (cd -- "$dir" && env "${gpath[@]}" "${genv[@]}" "${envs[@]}" timeout "${TROPA_SMOKE_TIMEOUT:-300}" "$bin" "${args[@]}" </dev/null >"$log" 2>&1) || rc=$?
+  if [ "$rc" = 0 ] && answer_ok "$log" "$X_OUT"; then ok=true; fi
+  rm -rf -- "$dir"
+  jq -n --arg d "$dino" --arg e "$X_EFFORT" --argjson rc "$rc" --argjson ok "$ok" \
+    --argjson s "$((SECONDS - started))" --arg log "$log" --argjson g "$guard" \
+    '{dino: $d, effort: $e, rc: $rc, ok: $ok, guard: $g, seconds: $s, log: $log}'
+  if [ "$ok" != true ]; then return 1; fi
+}
+
+# guard: escreve os wrappers e mostra o que vale. --check <pasta> abre um
+# `bash -l` e um `zsh -l` ali, com a guarda, e diz qual dotnet e qual git cada
+# um encontra (o `bash -l` roda `mise activate`, que é onde a guarda se perderia).
+cmd_guard() {
+  local check=""
+  if [ "${1:-}" = --check ]; then check="${2:-$PWD}"; fi
+  [ -f "$ROSTER" ] || die "roster ausente: $ROSTER"
+  local on=false env_json="{}" checks="{}" kv
+  local -a genv=()
+  if guard_on ""; then
+    on=true
+    ensure_guard
+    mapfile -d '' -t genv < <(guard_env)
+    for kv in "${genv[@]}"; do
+      env_json="$(jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '. + {($k): $v}' <<<"$env_json")"
+    done
+  fi
+  if [ -n "$check" ] && [ "$on" = true ]; then
+    [ -d "$check" ] || die "pasta inexistente: $check"
+    local sh tool path
+    for sh in bash zsh; do
+      command -v "$sh" >/dev/null 2>&1 || continue
+      for tool in dotnet git; do
+        path="$(cd -- "$check" && env "PATH=$GUARD_DIR:$PATH" "${genv[@]}" "$sh" -lc "command -v $tool" 2>/dev/null | tail -n 1 || true)"
+        checks="$(jq --arg s "${sh}_login" --arg t "$tool" --arg p "$path" --arg g "$GUARD_DIR/" \
+          '.[$s][$t] = {path: $p, guarded: ($p | startswith($g))}' <<<"$checks")"
+      done
+    done
+  fi
+  jq -n --argjson on "$on" --arg dir "$GUARD_DIR" --argjson env "$env_json" --argjson c "$checks" \
+    --argjson w "$(if [ "$on" = true ]; then find "$GUARD_DIR" -maxdepth 1 -type f ! -name '.*' -printf '%f\n' | sort | jq -R . | jq -s .; else echo '[]'; fi)" \
+    '{enabled: $on, dir: $dir, wrappers: $w, env: $env} + (if $c == {} then {} else {check: $c} end)'
+}
+
+main() {
+  need jq
+  need git
+  need flock
+  local cmd="${1:-help}"
+  if [ $# -gt 0 ]; then shift; fi
+  case "$cmd" in
+    up) cmd_up "$@" ;;
+    runs) cmd_runs "$@" ;;
+    deploy) cmd_deploy "$@" ;;
+    review) cmd_review "$@" ;;
+    fix) cmd_fix "$@" ;;
+    wait) cmd_wait "$@" ;;
+    unblock) cmd_unblock "$@" ;;
+    prompt) cmd_prompt "$@" ;;
+    read) cmd_read "$@" ;;
+    changes) cmd_changes "$@" ;;
+    status) cmd_status "$@" ;;
+    slots) cmd_slots "$@" ;;
+    board) cmd_board "$@" ;;
+    mark) cmd_mark "$@" ;;
+    say) cmd_say "$@" ;;
+    notify) cmd_notify "$@" ;;
+    recall) cmd_recall "$@" ;;
+    clean) cmd_clean "$@" ;;
+    down) cmd_down "$@" ;;
+    roster) cmd_roster "$@" ;;
+    smoke) cmd_smoke "$@" ;;
+    guard) cmd_guard "$@" ;;
+    version | --version) echo "tropa $VERSION" ;;
+    help | -h | --help) usage ;;
+    *) usage >&2; exit 64 ;;
+  esac
+}
+
+main "$@"

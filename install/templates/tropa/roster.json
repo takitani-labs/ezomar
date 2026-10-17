@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "about": [
+    "Elenco do skill tropadobolsonaro: só CLIs que NÃO são Claude. Medido nesta máquina em 17/10/2026 (um smoke headless por dinossauro).",
+    "enabled: false tira o dinossauro da escalação sem apagar a entrada.",
+    "account: pool de cota. O Flávio mantém no máximo UMA sessão ativa por account (execução, correção ou revisão).",
+    "tier: forte, medio ou leve. cross_required: true obriga revisão cruzada por outro dinossauro antes da revisão do Flávio.",
+    "kind: tipo de agente do herdr. null significa que o herdr não detecta esse CLI, então ele roda headless dentro de um painel.",
+    "auth: arquivo que existe quando a conta está logada. usage: JSON do painel de agentes do Omarchy (limits[].percent de 0 a 1), relativo a ~/.local/state/omarchy/agents/usage.",
+    "effort: exec (padrão), hard (item difícil), max (autorrevisão), max_safe (plano B quando o max não sobe). Qualquer outra string passada em --effort vai literal. No Codex, ultra NÃO é o max: é raciocínio máximo com delegação automática a subagentes (catálogo do modelo); fica como nível ultra, só por escolha explícita.",
+    "env: exportado na aba do herdr (--env) e no script do passo headless. tui.args: argumentos do modo interativo, passados ao `herdr agent start`. headless: bin e args do modo headless.",
+    "Placeholders: {WT} worktree, {EFFORT}, {MODEL}, {PROMPT}, {OUT} arquivo com a última mensagem. $HOME é expandido.",
+    "trust: codex-inline (o override de projects já está nos args), kimi-file (o tropa grava o arquivo de confiança da worktree antes de abrir) ou grok-folders (o tropa acrescenta a raiz do repositório principal em ~/.grok/trusted_folders.toml, uma vez por repositório).",
+    "guard: wrappers (dotnet, git, mise e os de recusa) na frente do PATH e as variáveis de guard.env em todo passo de dinossauro. Não é sandbox; é a segunda camada atrás da spec. guard: false num dinossauro tira a guarda só dele; TROPA_GUARD=0 tira de todos.",
+    "exit: como sair do TUI com elegância (keys via agent send-keys, ou text + enter via pane send-text)."
+  ],
+  "guard": {
+    "enabled": true,
+    "env": {
+      "PGPASSFILE": "/dev/null",
+      "AWS_CONFIG_FILE": "/dev/null",
+      "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+      "GIT_CONFIG_COUNT": "1",
+      "GIT_CONFIG_KEY_0": "remote.origin.pushurl",
+      "GIT_CONFIG_VALUE_0": "no-push://tropa-guard",
+      "MSBUILDDISABLENODEREUSE": "1",
+      "VSTestTestCaseFilter": "TestCategory!=Integration"
+    },
+    "test_filter_required": "TestCategory!=Integration",
+    "dotnet_run_block": "SelfHost|QueueProcessor|DatabaseMigrations|TestConsole|CandidateScoreLab|(^|[ /])Consoles/",
+    "git_block": ["push", "commit", "merge", "rebase", "pull", "cherry-pick", "am", "revert"],
+    "refuse": ["psql", "pg_dump", "aws"]
+  },
+  "dinos": {
+    "codex-exato": {
+      "enabled": true,
+      "provider": "OpenAI Codex Pro, conta Exato",
+      "account": "codex-exato",
+      "tier": "forte",
+      "cross_required": false,
+      "agent_prefix": "rex",
+      "kind": "codex",
+      "auth": "$HOME/.codex-profiles/exato/auth.json",
+      "usage": "codex-exato.json",
+      "model": "gpt-6-astra",
+      "effort": { "exec": "high", "hard": "xhigh", "max": "max", "max_safe": "xhigh", "ultra": "ultra" },
+      "env": { "CODEX_HOME": "$HOME/.codex-profiles/exato" },
+      "tui": {
+        "args": ["-m", "{MODEL}", "-c", "model_reasoning_effort={EFFORT}", "-c", "check_for_update_on_startup=false",
+                 "--dangerously-bypass-approvals-and-sandbox", "--no-alt-screen",
+                 "-c", "projects={\"{WT}\"={trust_level=\"trusted\"}}"]
+      },
+      "headless": {
+        "bin": "codex",
+        "args": ["exec", "-m", "{MODEL}", "-c", "model_reasoning_effort={EFFORT}",
+                 "--dangerously-bypass-approvals-and-sandbox", "--ephemeral", "-C", "{WT}", "-o", "{OUT}", "{PROMPT}"]
+      },
+      "trust": "codex-inline",
+      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+    },
+    "codex-personal": {
+      "enabled": true,
+      "provider": "OpenAI Codex, conta pessoal",
+      "account": "codex-personal",
+      "tier": "forte",
+      "cross_required": false,
+      "agent_prefix": "raptor",
+      "kind": "codex",
+      "auth": "$HOME/.codex-profiles/personal/auth.json",
+      "usage": "codex.json",
+      "model": "gpt-6-astra",
+      "effort": { "exec": "high", "hard": "xhigh", "max": "max", "max_safe": "xhigh", "ultra": "ultra" },
+      "env": { "CODEX_HOME": "$HOME/.codex-profiles/personal" },
+      "tui": {
+        "args": ["-m", "{MODEL}", "-c", "model_reasoning_effort={EFFORT}", "-c", "check_for_update_on_startup=false",
+                 "--dangerously-bypass-approvals-and-sandbox", "--no-alt-screen",
+                 "-c", "projects={\"{WT}\"={trust_level=\"trusted\"}}"]
+      },
+      "headless": {
+        "bin": "codex",
+        "args": ["exec", "-m", "{MODEL}", "-c", "model_reasoning_effort={EFFORT}",
+                 "--dangerously-bypass-approvals-and-sandbox", "--ephemeral", "-C", "{WT}", "-o", "{OUT}", "{PROMPT}"]
+      },
+      "trust": "codex-inline",
+      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+    },
+    "kimi-exato": {
+      "enabled": true,
+      "provider": "Moonshot Kimi Code, conta Exato (home padrão)",
+      "account": "kimi-exato",
+      "tier": "forte",
+      "cross_required": false,
+      "agent_prefix": "trice",
+      "kind": "kimi",
+      "auth": "$HOME/.kimi-code/credentials",
+      "usage": "ezomar-ai-usagebar-kimi.json",
+      "model": "kimi-code/k3",
+      "effort": { "exec": "high", "hard": "high", "max": "max", "max_safe": "high" },
+      "env": { "KIMI_CODE_HOME": "$HOME/.kimi-code", "KIMI_MODEL_THINKING_EFFORT": "{EFFORT}" },
+      "tui": { "args": ["--auto", "-m", "{MODEL}"] },
+      "headless": {
+        "bin": "$HOME/.kimi-code/bin/kimi",
+        "args": ["-m", "{MODEL}", "-p", "{PROMPT}", "--output-format", "stream-json"]
+      },
+      "trust": "kimi-file",
+      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+    },
+    "kimi-personal": {
+      "enabled": true,
+      "provider": "Moonshot Kimi Code, conta pessoal (plano Ultra)",
+      "account": "kimi-personal",
+      "tier": "forte",
+      "cross_required": false,
+      "agent_prefix": "estego",
+      "kind": "kimi",
+      "auth": "$HOME/.kimi-code-profiles/personal/credentials",
+      "usage": "ezomar-ai-usagebar-kimi-personal.json",
+      "model": "kimi-code/k3",
+      "effort": { "exec": "high", "hard": "high", "max": "max", "max_safe": "high" },
+      "env": {
+        "KIMI_CODE_HOME": "$HOME/.kimi-code-profiles/personal",
+        "KIMI_CODE_NO_AUTO_UPDATE": "1",
+        "KIMI_MODEL_THINKING_EFFORT": "{EFFORT}"
+      },
+      "tui": { "args": ["--auto", "-m", "{MODEL}"] },
+      "headless": {
+        "bin": "$HOME/.kimi-code/bin/kimi",
+        "args": ["-m", "{MODEL}", "-p", "{PROMPT}", "--output-format", "stream-json"]
+      },
+      "trust": "kimi-file",
+      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+    },
+    "glm-zai": {
+      "enabled": true,
+      "provider": "Z.AI GLM Coding Pro via OpenCode (provider zai)",
+      "account": "zai",
+      "tier": "medio",
+      "cross_required": false,
+      "agent_prefix": "braqui",
+      "kind": "opencode",
+      "auth": "$HOME/.config/opencode/opencode.jsonc",
+      "usage": "ezomar-ai-usagebar-zai.json",
+      "model": "zai/glm-5.3",
+      "effort": { "exec": "high", "hard": "high", "max": "max", "max_safe": "high" },
+      "env": {
+        "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"build\":{\"model\":\"{MODEL}\",\"variant\":\"{EFFORT}\"}}}",
+        "XDG_STATE_HOME": "$HOME/.local/state/tropa/opencode/glm-zai",
+        "MISE_STATE_DIR": "$HOME/.local/state/mise"
+      },
+      "tui": { "args": ["{WT}", "-m", "{MODEL}", "--auto"] },
+      "headless": {
+        "bin": "opencode",
+        "args": ["run", "-m", "{MODEL}", "--variant", "{EFFORT}", "--auto", "--dir", "{WT}", "--format", "json", "{PROMPT}"]
+      },
+      "trust": null,
+      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+    },
+    "opencode-go": {
+      "enabled": true,
+      "provider": "OpenCode Go, modelo Qwen 3.8 Max (o padrão deepseek-v4-pro exige Global regions no workspace)",
+      "account": "opencode-go",
+      "tier": "medio",
+      "cross_required": false,
+      "agent_prefix": "anqui",
+      "kind": "opencode",
+      "auth": "$HOME/.local/share/opencode/auth.json",
+      "usage": "ezomar-ai-usagebar-opencode-go.json",
+      "model": "opencode-go/qwen3.8-max",
+      "effort": { "exec": "xhigh", "hard": "xhigh", "max": "xhigh", "max_safe": "medium" },
+      "env": {
+        "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"build\":{\"model\":\"{MODEL}\",\"variant\":\"{EFFORT}\"}}}",
+        "XDG_STATE_HOME": "$HOME/.local/state/tropa/opencode/opencode-go",
+        "MISE_STATE_DIR": "$HOME/.local/state/mise"
+      },
+      "tui": { "args": ["{WT}", "-m", "{MODEL}", "--auto"] },
+      "headless": {
+        "bin": "opencode",
+        "args": ["run", "-m", "{MODEL}", "--variant", "{EFFORT}", "--auto", "--dir", "{WT}", "--format", "json", "{PROMPT}"]
+      },
+      "trust": null,
+      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+    },
+    "grok": {
+      "enabled": true,
+      "provider": "xAI SuperGrok, Grok Build CLI",
+      "account": "supergrok",
+      "tier": "leve",
+      "cross_required": true,
+      "agent_prefix": "grokosso",
+      "kind": "grok",
+      "auth": "$HOME/.grok/auth.json",
+      "usage": "ezomar-ai-usagebar-supergrok.json",
+      "model": "grok-4.7",
+      "effort": { "exec": "high", "hard": "xhigh", "max": "xhigh", "max_safe": "high" },
+      "env": {},
+      "tui": { "args": ["-m", "{MODEL}", "--effort", "{EFFORT}", "--always-approve", "--no-alt-screen", "--cwd", "{WT}"] },
+      "headless": {
+        "bin": "grok",
+        "args": ["-p", "{PROMPT}", "-m", "{MODEL}", "--effort", "{EFFORT}", "--always-approve", "--cwd", "{WT}", "--output-format", "json"]
+      },
+      "trust": "grok-folders",
+      "exit": { "text": "/quit" }
+    },
+    "muse": {
+      "enabled": true,
+      "provider": "Meta Muse Code (sem tipo de agente no herdr 0.8.2)",
+      "account": "muse",
+      "tier": "leve",
+      "cross_required": true,
+      "agent_prefix": "ptero",
+      "kind": null,
+      "auth": "$HOME/.config/muse/auth.json",
+      "usage": null,
+      "model": "muse-spark-1.3-contributor",
+      "effort": { "exec": "high", "hard": "xhigh", "max": "xhigh", "max_safe": "high" },
+      "env": {},
+      "tui": null,
+      "headless": {
+        "bin": "$HOME/.local/bin/muse",
+        "args": ["exec", "--model", "{MODEL}", "--reasoning-effort", "{EFFORT}", "--yolo", "--no-foreign-personal-context", "--json", "{PROMPT}"]
+      },
+      "trust": null,
+      "exit": null
+    }
+  }
+}

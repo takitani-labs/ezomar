@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "about": [
+    "Camada de meme do skill tropadobolsonaro: só rótulo de aba do herdr, notificação e narração para o Andre. Spec, prompt de dinossauro, código, commit e TODO ficam em inglês profissional, sem meme.",
+    "Base: o meme 'Bolsonaro hipotético' da campanha de 2026 (Flávio onipotente no trono dourado, 'domou dinossauros', bordão 'Ele não é real. Ele é pior.').",
+    "Regra: o comunista é sempre o bug, o teste vermelho ou o código legado. Nenhuma pessoa ou grupo real vira alvo, nada de ofensa, violência contra gente de verdade ou acusação factual contra alguém real.",
+    "As falas 'E daí?' e 'não faço milagre' nasceram de uma fala sobre mortes na pandemia. Aqui aparecem só no evento failed e sempre sobre o próprio dinossauro. Se pesar, apague as linhas.",
+    "Placeholders: {dino} apelido do dinossauro, {task} ID ou título curto da tarefa (cortado em 24 caracteres nas abas). Sem emoji, para não quebrar a largura das abas.",
+    "O tropa escolhe sempre pelo índice da tarefa (determinístico); 'say' ainda gira um contador por evento para não repetir a mesma frase."
+  ],
+  "dinos": {
+    "codex-exato": "Tiranossauro Mito",
+    "codex-personal": "Velociraptor Patriota",
+    "kimi-exato": "Triceratopo Talkey",
+    "kimi-personal": "Estegossauro Verde-Amarelo",
+    "glm-zai": "Braquiossauro Imbrochável",
+    "opencode-go": "Anquilossauro Taokey",
+    "grok": "Grokossauro da Massa",
+    "muse": "Pterodáctilo Conservador",
+    "spare-1": "Espinossauro Capitão",
+    "spare-2": "Dilofossauro Cidadão de Bem"
+  },
+  "workspace_names": [
+    "Tropa do Bolsonaro",
+    "Batalhão do Flávio",
+    "Jurassic Planalto",
+    "Bolsonaro Hipotético HQ",
+    "Quartel dos Dinossauros",
+    "Caça aos Comunistas do Código",
+    "Operação Backlog Zero",
+    "Parque dos Dinos Patriotas",
+    "Brasil Acima do Backlog",
+    "QG Verde e Amarelo"
+  ],
+  "hq_tab": "QG do Flávio",
+  "tab_names": [
+    "Rex x {task}",
+    "Caçando {task}",
+    "Mito vs {task}",
+    "Dino destrói {task}",
+    "Talkey {task}",
+    "Missão {task}",
+    "Fim da mamata {task}",
+    "Comunista {task}",
+    "Acabou {task}"
+  ],
+  "review_tab_names": [
+    "Pente-fino {task}",
+    "Autocrítica {task}",
+    "Lupa de CPI {task}",
+    "Imbrochável {task}"
+  ],
+  "cross_tab_names": [
+    "Acareação {task}",
+    "Revista {task}",
+    "Segunda opinião {task}"
+  ],
+  "flavio_names": [
+    "Flávio revisa {task}",
+    "Ultracode do 01",
+    "Revista na master",
+    "Trono dourado"
+  ],
+  "catchphrases": [
+    "Talkey? / Taokey?",
+    "Ele não é real. Ele é pior.",
+    "Brasil acima de tudo, Deus acima de todos",
+    "Acabou, porra!",
+    "Acabou a mamata",
+    "Imbrochável, imbrochável, imbrochável",
+    "Mito!",
+    "Missão dada é missão cumprida",
+    "Herança maldita",
+    "Isso é fake news",
+    "Teste vermelho é comunista, talkey?",
+    "Aqui é verde e amarelo"
+  ],
+  "event_lines": {
+    "start": [
+      "Flávio mandou o batalhão: {dino} partiu pra cima de {task}",
+      "{dino} saiu da jaula. Comunista {task}, teu tempo acabou, talkey?",
+      "Brasil acima de tudo, testes acima de todos. {dino} em campo",
+      "Operação {task} iniciada. {dino} carregou o fuzil de testes",
+      "Missão dada é missão cumprida: {dino} assumiu {task}",
+      "Hipoteticamente, {dino} destrói {task} em 3, 2, 1",
+      "Taokey, pessoal: {dino} vai caçar comunista em {task}",
+      "{dino} pisou na worktree e o comitê central do bug tremeu"
+    ],
+    "working": [
+      "{dino} varrendo esquerdista do código linha por linha",
+      "Rugido na worktree: {dino} mastigando {task}",
+      "{dino} trabalhando igual capitão: sem férias, sem mimimi",
+      "Compilando com fé. Deus acima de todos, build acima de tudo",
+      "{dino} achou um ninho de comunistas em {task}. Limpeza em andamento",
+      "Isso aí não é bug, é infiltrado. {dino} cuidando, talkey?",
+      "Desmontando a herança maldita do código legado",
+      "Warning zero, mimimi zero: {dino} na labuta"
+    ],
+    "self_review": [
+      "{dino} com effort no talo: autocrítica de patriota",
+      "Revisão no máximo: {dino} caçando comunista infiltrado no próprio diff",
+      "Nem a própria sombra escapa: {dino} auditando o que fez",
+      "{dino} relendo o diff com lupa de CPI",
+      "Imbrochável: {dino} revisando {task} de novo, do zero",
+      "Sessão nova, olho novo: sobrou esquerdista em {task}?",
+      "Antes de chamar o Flávio, {dino} passa o pente-fino"
+    ],
+    "cross_review": [
+      "Acareação: {dino} confere o serviço do colega em {task}",
+      "Dinossauro não confia em dinossauro: {dino} revistando {task}",
+      "Segunda opinião patriota: {dino} na lupa de {task}",
+      "Ninguém revisa a si mesmo sozinho. {dino} entrou na CPI de {task}"
+    ],
+    "bug_found": [
+      "Comunista encontrado em {task}! {dino} partindo pra cima",
+      "Esquerdista escondido no catch vazio. Neutralizando",
+      "Teste vermelho é comunista, talkey? {dino} corrigindo",
+      "Teste vermelho? Aqui é verde e amarelo",
+      "Infiltrado detectado: race condition disfarçada de feature",
+      "Bug querendo mamar no try/catch. Acabou a mamata",
+      "Mais um agente do comitê central do null pointer",
+      "Achou bug? {dino} já tá resolvendo, talkey?"
+    ],
+    "flavio_review": [
+      "Flávio ligou o ultracode: revisão hipotética de nível cósmico",
+      "Flávio no trono dourado analisando {task}. Ele não é real, ele é pior",
+      "O 01 está lendo o diff de {dino}. Nada passa sem carimbo",
+      "Flávio montou no T-rex e foi conferir o trabalho de {dino}",
+      "Revisão adversarial: Flávio caçando comunista que {dino} deixou passar",
+      "Ultracode no talo. Se tiver esquerdista no diff, não sobra um",
+      "A master é patrimônio nacional: ninguém entra sem revista",
+      "Comissão do Flávio instalada. Depoente: {dino}"
+    ],
+    "merged": [
+      "Acabou, porra! {task} na master",
+      "Missão cumprida: {dino} destruiu os comunistas de {task}",
+      "Mito! {task} mergeado. Brasil acima de tudo",
+      "Mais um comunista eliminado do backlog. Taokey?",
+      "{task} na master. Imbrochável, imbrochável, imbrochável",
+      "Flávio carimbou, {dino} rugiu, a master agradece",
+      "Backlog menor, Brasil maior: {task} entregue",
+      "O dinossauro passou e não sobrou bug pra contar história"
+    ],
+    "failed": [
+      "E daí? {dino} tombou em {task}, mas o batalhão continua",
+      "Fake news! O teste mentiu. Reagrupando a tropa",
+      "{dino} perdeu a batalha, não a guerra. {task} volta pra fila",
+      "Sou dinossauro, mas não faço milagre: {task} falhou",
+      "Os comunistas de {task} resistiram. Flávio vai mandar reforço",
+      "Deu ruim na worktree. Culpa da herança maldita",
+      "Recuo tático: {dino} voltou pro quartel",
+      "Quer que eu faça o quê? O log tá aí, o Flávio vai olhar"
+    ],
+    "handed_over": [
+      "Flávio passou {task} pro capitão: tem coisa que nem dinossauro resolve",
+      "{task} subiu pro Planalto. O Andre decide, talkey?",
+      "Missão {task} entregue ao comando: sobrou comunista que precisa de decisão humana"
+    ],
+    "recall": [
+      "Flávio chamou {dino} de volta pro quartel",
+      "Recolher, tropa! {dino} sai de {task}",
+      "Ordem do 01: {dino} recua e guarda o fuzil de testes",
+      "Missão abortada. {dino} volta pro Jurassic Planalto",
+      "Toque de recolher: worktree de {task} congelada",
+      "{dino} desmobilizado. Os comunistas de {task} ganharam mais um dia",
+      "Retirada estratégica, talkey? A gente volta"
+    ]
+  }
+}

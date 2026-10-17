@@ -94,6 +94,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `68-pidbox.sh` | opt-in: guard de namespace de PID contra `kill(-1)` de suítes de teste |
 | `69-herdr-profile-switch.sh` | instala `Ctrl+B, A` para trocar a conta do Codex ou Claude sem perder a sessão |
 | `70-collie.sh` | instala opcionalmente o plugin Collie, sem publicar o bridge |
+| `71-tropa.sh` | instala o `tropa`, helper do skill `tropadobolsonaro` (uma worktree e uma aba do herdr por tarefa, tocadas por agentes que não são Claude), e o elenco e os memes em `~/.config/tropa` sem pisar em edição local |
 | `72-tools-repo.sh` | clona seu repo privado de ferramentas, se `EZOMAR_TOOLS_REPO` estiver definido |
 | `74-meeting-rig.sh` | linka o `mrig` desse repo e roda o setup dele (venv + modelo) |
 | `76-claude-auth-preflight.sh` | instala o unit que avisa de perfis deslogados antes do herdr subir |

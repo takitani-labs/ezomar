@@ -118,6 +118,9 @@ done
 [ -x "$HOME/.local/bin/herdr-switch-agent-profile" ] \
   && ok "seletor de profile Codex/Claude do herdr" \
   || bad "herdr-switch-agent-profile ausente"
+[ -x "$HOME/.local/bin/tropa" ] && ok "tropa (skill tropadobolsonaro)" || bad "tropa ausente (módulo 71)"
+[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/tropa/roster.json" ] \
+  && ok "elenco da tropa" || bad "roster da tropa ausente (módulo 71)"
 grep -q '^# >>> herdr agent profile switch (ezdora/ezomar) >>>$' \
   "$HOME/.config/herdr/config.toml" 2>/dev/null \
   && ok "atalho Ctrl+B, A do herdr" || bad "keybinding de troca de profile ausente"
