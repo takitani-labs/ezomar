@@ -28,8 +28,21 @@
     },
     "test_filter_required": "TestCategory!=Integration",
     "dotnet_run_block": "SelfHost|QueueProcessor|DatabaseMigrations|TestConsole|CandidateScoreLab|(^|[ /])Consoles/",
-    "git_block": ["push", "commit", "merge", "rebase", "pull", "cherry-pick", "am", "revert"],
-    "refuse": ["psql", "pg_dump", "aws"]
+    "git_block": [
+      "push",
+      "commit",
+      "merge",
+      "rebase",
+      "pull",
+      "cherry-pick",
+      "am",
+      "revert"
+    ],
+    "refuse": [
+      "psql",
+      "pg_dump",
+      "aws"
+    ]
   },
   "dinos": {
     "codex-exato": {
@@ -43,20 +56,54 @@
       "auth": "$HOME/.codex-profiles/exato/auth.json",
       "usage": "codex-exato.json",
       "model": "gpt-6-astra",
-      "effort": { "exec": "high", "hard": "xhigh", "max": "max", "max_safe": "xhigh", "ultra": "ultra" },
-      "env": { "CODEX_HOME": "$HOME/.codex-profiles/exato" },
+      "effort": {
+        "exec": "high",
+        "hard": "xhigh",
+        "max": "max",
+        "max_safe": "xhigh",
+        "ultra": "ultra"
+      },
+      "env": {
+        "CODEX_HOME": "$HOME/.codex-profiles/exato"
+      },
       "tui": {
-        "args": ["-m", "{MODEL}", "-c", "model_reasoning_effort={EFFORT}", "-c", "check_for_update_on_startup=false",
-                 "--dangerously-bypass-approvals-and-sandbox", "--no-alt-screen",
-                 "-c", "projects={\"{WT}\"={trust_level=\"trusted\"}}"]
+        "args": [
+          "-m",
+          "{MODEL}",
+          "-c",
+          "model_reasoning_effort={EFFORT}",
+          "-c",
+          "check_for_update_on_startup=false",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--no-alt-screen",
+          "-c",
+          "projects={\"{WT}\"={trust_level=\"trusted\"}}"
+        ]
       },
       "headless": {
         "bin": "codex",
-        "args": ["exec", "-m", "{MODEL}", "-c", "model_reasoning_effort={EFFORT}",
-                 "--dangerously-bypass-approvals-and-sandbox", "--ephemeral", "-C", "{WT}", "-o", "{OUT}", "{PROMPT}"]
+        "args": [
+          "exec",
+          "-m",
+          "{MODEL}",
+          "-c",
+          "model_reasoning_effort={EFFORT}",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--ephemeral",
+          "-C",
+          "{WT}",
+          "-o",
+          "{OUT}",
+          "{PROMPT}"
+        ]
       },
       "trust": "codex-inline",
-      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+      "exit": {
+        "keys": [
+          "ctrl+c",
+          "ctrl+c"
+        ]
+      }
     },
     "codex-personal": {
       "enabled": true,
@@ -69,20 +116,54 @@
       "auth": "$HOME/.codex-profiles/personal/auth.json",
       "usage": "codex.json",
       "model": "gpt-6-astra",
-      "effort": { "exec": "high", "hard": "xhigh", "max": "max", "max_safe": "xhigh", "ultra": "ultra" },
-      "env": { "CODEX_HOME": "$HOME/.codex-profiles/personal" },
+      "effort": {
+        "exec": "high",
+        "hard": "xhigh",
+        "max": "max",
+        "max_safe": "xhigh",
+        "ultra": "ultra"
+      },
+      "env": {
+        "CODEX_HOME": "$HOME/.codex-profiles/personal"
+      },
       "tui": {
-        "args": ["-m", "{MODEL}", "-c", "model_reasoning_effort={EFFORT}", "-c", "check_for_update_on_startup=false",
-                 "--dangerously-bypass-approvals-and-sandbox", "--no-alt-screen",
-                 "-c", "projects={\"{WT}\"={trust_level=\"trusted\"}}"]
+        "args": [
+          "-m",
+          "{MODEL}",
+          "-c",
+          "model_reasoning_effort={EFFORT}",
+          "-c",
+          "check_for_update_on_startup=false",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--no-alt-screen",
+          "-c",
+          "projects={\"{WT}\"={trust_level=\"trusted\"}}"
+        ]
       },
       "headless": {
         "bin": "codex",
-        "args": ["exec", "-m", "{MODEL}", "-c", "model_reasoning_effort={EFFORT}",
-                 "--dangerously-bypass-approvals-and-sandbox", "--ephemeral", "-C", "{WT}", "-o", "{OUT}", "{PROMPT}"]
+        "args": [
+          "exec",
+          "-m",
+          "{MODEL}",
+          "-c",
+          "model_reasoning_effort={EFFORT}",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--ephemeral",
+          "-C",
+          "{WT}",
+          "-o",
+          "{OUT}",
+          "{PROMPT}"
+        ]
       },
       "trust": "codex-inline",
-      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+      "exit": {
+        "keys": [
+          "ctrl+c",
+          "ctrl+c"
+        ]
+      }
     },
     "kimi-exato": {
       "enabled": true,
@@ -95,15 +176,41 @@
       "auth": "$HOME/.kimi-code/credentials",
       "usage": "ezomar-ai-usagebar-kimi.json",
       "model": "kimi-code/k3",
-      "effort": { "exec": "high", "hard": "high", "max": "max", "max_safe": "high" },
-      "env": { "KIMI_CODE_HOME": "$HOME/.kimi-code", "KIMI_MODEL_THINKING_EFFORT": "{EFFORT}" },
-      "tui": { "args": ["--auto", "-m", "{MODEL}"] },
+      "effort": {
+        "exec": "high",
+        "hard": "high",
+        "max": "max",
+        "max_safe": "high"
+      },
+      "env": {
+        "KIMI_CODE_HOME": "$HOME/.kimi-code",
+        "KIMI_MODEL_THINKING_EFFORT": "{EFFORT}"
+      },
+      "tui": {
+        "args": [
+          "--auto",
+          "-m",
+          "{MODEL}"
+        ]
+      },
       "headless": {
         "bin": "$HOME/.kimi-code/bin/kimi",
-        "args": ["-m", "{MODEL}", "-p", "{PROMPT}", "--output-format", "stream-json"]
+        "args": [
+          "-m",
+          "{MODEL}",
+          "-p",
+          "{PROMPT}",
+          "--output-format",
+          "stream-json"
+        ]
       },
       "trust": "kimi-file",
-      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+      "exit": {
+        "keys": [
+          "ctrl+c",
+          "ctrl+c"
+        ]
+      }
     },
     "kimi-personal": {
       "enabled": true,
@@ -116,19 +223,42 @@
       "auth": "$HOME/.kimi-code-profiles/personal/credentials",
       "usage": "ezomar-ai-usagebar-kimi-personal.json",
       "model": "kimi-code/k3",
-      "effort": { "exec": "high", "hard": "high", "max": "max", "max_safe": "high" },
+      "effort": {
+        "exec": "high",
+        "hard": "high",
+        "max": "max",
+        "max_safe": "high"
+      },
       "env": {
         "KIMI_CODE_HOME": "$HOME/.kimi-code-profiles/personal",
         "KIMI_CODE_NO_AUTO_UPDATE": "1",
         "KIMI_MODEL_THINKING_EFFORT": "{EFFORT}"
       },
-      "tui": { "args": ["--auto", "-m", "{MODEL}"] },
+      "tui": {
+        "args": [
+          "--auto",
+          "-m",
+          "{MODEL}"
+        ]
+      },
       "headless": {
         "bin": "$HOME/.kimi-code/bin/kimi",
-        "args": ["-m", "{MODEL}", "-p", "{PROMPT}", "--output-format", "stream-json"]
+        "args": [
+          "-m",
+          "{MODEL}",
+          "-p",
+          "{PROMPT}",
+          "--output-format",
+          "stream-json"
+        ]
       },
       "trust": "kimi-file",
-      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+      "exit": {
+        "keys": [
+          "ctrl+c",
+          "ctrl+c"
+        ]
+      }
     },
     "glm-zai": {
       "enabled": true,
@@ -141,19 +271,48 @@
       "auth": "$HOME/.config/opencode/opencode.jsonc",
       "usage": "ezomar-ai-usagebar-zai.json",
       "model": "zai/glm-5.3",
-      "effort": { "exec": "high", "hard": "high", "max": "max", "max_safe": "high" },
+      "effort": {
+        "exec": "high",
+        "hard": "high",
+        "max": "max",
+        "max_safe": "high"
+      },
       "env": {
         "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"build\":{\"model\":\"{MODEL}\",\"variant\":\"{EFFORT}\"}}}",
         "XDG_STATE_HOME": "$HOME/.local/state/tropa/opencode/glm-zai",
         "MISE_STATE_DIR": "$HOME/.local/state/mise"
       },
-      "tui": { "args": ["{WT}", "-m", "{MODEL}", "--auto"] },
+      "tui": {
+        "args": [
+          "{WT}",
+          "-m",
+          "{MODEL}",
+          "--auto"
+        ]
+      },
       "headless": {
         "bin": "opencode",
-        "args": ["run", "-m", "{MODEL}", "--variant", "{EFFORT}", "--auto", "--dir", "{WT}", "--format", "json", "{PROMPT}"]
+        "args": [
+          "run",
+          "-m",
+          "{MODEL}",
+          "--variant",
+          "{EFFORT}",
+          "--auto",
+          "--dir",
+          "{WT}",
+          "--format",
+          "json",
+          "{PROMPT}"
+        ]
       },
       "trust": null,
-      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+      "exit": {
+        "keys": [
+          "ctrl+c",
+          "ctrl+c"
+        ]
+      }
     },
     "opencode-go": {
       "enabled": true,
@@ -166,19 +325,48 @@
       "auth": "$HOME/.local/share/opencode/auth.json",
       "usage": "ezomar-ai-usagebar-opencode-go.json",
       "model": "opencode-go/qwen3.8-max",
-      "effort": { "exec": "xhigh", "hard": "xhigh", "max": "xhigh", "max_safe": "medium" },
+      "effort": {
+        "exec": "xhigh",
+        "hard": "xhigh",
+        "max": "xhigh",
+        "max_safe": "medium"
+      },
       "env": {
         "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"build\":{\"model\":\"{MODEL}\",\"variant\":\"{EFFORT}\"}}}",
         "XDG_STATE_HOME": "$HOME/.local/state/tropa/opencode/opencode-go",
         "MISE_STATE_DIR": "$HOME/.local/state/mise"
       },
-      "tui": { "args": ["{WT}", "-m", "{MODEL}", "--auto"] },
+      "tui": {
+        "args": [
+          "{WT}",
+          "-m",
+          "{MODEL}",
+          "--auto"
+        ]
+      },
       "headless": {
         "bin": "opencode",
-        "args": ["run", "-m", "{MODEL}", "--variant", "{EFFORT}", "--auto", "--dir", "{WT}", "--format", "json", "{PROMPT}"]
+        "args": [
+          "run",
+          "-m",
+          "{MODEL}",
+          "--variant",
+          "{EFFORT}",
+          "--auto",
+          "--dir",
+          "{WT}",
+          "--format",
+          "json",
+          "{PROMPT}"
+        ]
       },
       "trust": null,
-      "exit": { "keys": ["ctrl+c", "ctrl+c"] }
+      "exit": {
+        "keys": [
+          "ctrl+c",
+          "ctrl+c"
+        ]
+      }
     },
     "grok": {
       "enabled": true,
@@ -191,15 +379,45 @@
       "auth": "$HOME/.grok/auth.json",
       "usage": "ezomar-ai-usagebar-supergrok.json",
       "model": "grok-4.7",
-      "effort": { "exec": "high", "hard": "xhigh", "max": "xhigh", "max_safe": "high" },
+      "effort": {
+        "exec": "high",
+        "hard": "xhigh",
+        "max": "xhigh",
+        "max_safe": "high"
+      },
       "env": {},
-      "tui": { "args": ["-m", "{MODEL}", "--effort", "{EFFORT}", "--always-approve", "--no-alt-screen", "--cwd", "{WT}"] },
+      "tui": {
+        "args": [
+          "-m",
+          "{MODEL}",
+          "--effort",
+          "{EFFORT}",
+          "--always-approve",
+          "--no-alt-screen",
+          "--cwd",
+          "{WT}"
+        ]
+      },
       "headless": {
         "bin": "grok",
-        "args": ["-p", "{PROMPT}", "-m", "{MODEL}", "--effort", "{EFFORT}", "--always-approve", "--cwd", "{WT}", "--output-format", "json"]
+        "args": [
+          "-p",
+          "{PROMPT}",
+          "-m",
+          "{MODEL}",
+          "--effort",
+          "{EFFORT}",
+          "--always-approve",
+          "--cwd",
+          "{WT}",
+          "--output-format",
+          "json"
+        ]
       },
       "trust": "grok-folders",
-      "exit": { "text": "/quit" }
+      "exit": {
+        "text": "/quit"
+      }
     },
     "muse": {
       "enabled": true,
@@ -212,15 +430,84 @@
       "auth": "$HOME/.config/muse/auth.json",
       "usage": null,
       "model": "muse-spark-1.3-contributor",
-      "effort": { "exec": "high", "hard": "xhigh", "max": "xhigh", "max_safe": "high" },
+      "effort": {
+        "exec": "high",
+        "hard": "xhigh",
+        "max": "xhigh",
+        "max_safe": "high"
+      },
       "env": {},
       "tui": null,
       "headless": {
         "bin": "$HOME/.local/bin/muse",
-        "args": ["exec", "--model", "{MODEL}", "--reasoning-effort", "{EFFORT}", "--yolo", "--no-foreign-personal-context", "--json", "{PROMPT}"]
+        "args": [
+          "exec",
+          "--model",
+          "{MODEL}",
+          "--reasoning-effort",
+          "{EFFORT}",
+          "--yolo",
+          "--no-foreign-personal-context",
+          "--json",
+          "{PROMPT}"
+        ]
       },
       "trust": null,
       "exit": null
+    },
+    "gemini": {
+      "enabled": true,
+      "provider": "Google One (oauth-personal), Gemini CLI",
+      "account": "gemini-google-one",
+      "tier": "leve",
+      "cross_required": true,
+      "agent_prefix": "geminossauro",
+      "kind": "gemini",
+      "auth": "$HOME/.gemini/oauth_creds.json",
+      "usage": null,
+      "model": "gemini-3.8-flash",
+      "note": "Sem flag de esforco no CLI: o nivel e ignorado. A conta exige GOOGLE_CLOUD_PROJECT; o projeto gen-lang-client-0006792947 tem cloudaicompanion ligado. Ali so ha flash e gemini-2.5-pro (3.x pro da 404). As chaves de API vao vazias para o OAuth vencer.",
+      "effort": {
+        "exec": "high",
+        "hard": "high",
+        "max": "high",
+        "max_safe": "high"
+      },
+      "env": {
+        "GOOGLE_CLOUD_PROJECT": "gen-lang-client-0006792947",
+        "GOOGLE_API_KEY": "",
+        "GEMINI_API_KEY": ""
+      },
+      "tui": {
+        "args": [
+          "-m",
+          "{MODEL}",
+          "--approval-mode",
+          "yolo",
+          "--skip-trust"
+        ]
+      },
+      "headless": {
+        "bin": "gemini",
+        "args": [
+          "-p",
+          "{PROMPT}",
+          "-m",
+          "{MODEL}",
+          "--approval-mode",
+          "yolo",
+          "--skip-trust",
+          "-o",
+          "text"
+        ]
+      },
+      "trust": null,
+      "exit": {
+        "keys": [
+          "ctrl+c",
+          "ctrl+c"
+        ]
+      }
     }
   }
 }
