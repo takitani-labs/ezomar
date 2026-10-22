@@ -61,10 +61,20 @@ command -v gio >/dev/null 2>&1 || { say "gio não encontrado (pacote gvfs)." >&2
 
 # Sem responder, o gio abre um prompt e o serviço trava no login esperando algo
 # que ninguém vai digitar.
-if ! timeout 6 bash -c "exec 3<>/dev/tcp/$SERVER/445" 2>/dev/null; then
-  say "$SERVER não responde na porta 445. NAS desligado ou fora da rede." >&2
-  exit 1
-fi
+#
+# ZEUS_WAIT é quantos segundos insistir antes de desistir. Na mão é 0: a
+# resposta vem na hora. O serviço do login passa 300, porque em 22/10/2026 ele
+# rodou antes de a rede (ou o NAS) estar pronta, desistiu de primeira e os
+# shares só voltaram com um `zeus-mount` manual.
+wait_left="${ZEUS_WAIT:-0}"
+until timeout 6 bash -c "exec 3<>/dev/tcp/$SERVER/445" 2>/dev/null; do
+  if [ "$wait_left" -le 0 ]; then
+    say "$SERVER não responde na porta 445. NAS desligado ou fora da rede." >&2
+    exit 1
+  fi
+  sleep 10
+  wait_left=$((wait_left - 10))
+done
 
 PASS="$(secret-tool lookup server "$SERVER" protocol smb user "$USER_NAME" service zeus-mount 2>/dev/null || true)"
 [ -n "$PASS" ] || say "Sem senha no chaveiro; só os shares abertos vão montar."

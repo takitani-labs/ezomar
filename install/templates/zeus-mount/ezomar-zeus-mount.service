@@ -10,6 +10,9 @@ Type=oneshot
 RemainAfterExit=yes
 # Um NAS desligado não é falha do login: o serviço sai em silêncio e o próximo
 # `zeus-mount` na mão resolve.
+# Insiste por até 5 minutos: no login a rede e o NAS podem ainda não estar de pé.
+Environment=ZEUS_WAIT=300
+TimeoutStartSec=420
 ExecStart=-%h/.local/bin/zeus-mount
 ExecStop=-%h/.local/bin/zeus-mount umount
 
