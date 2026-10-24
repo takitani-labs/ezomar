@@ -96,6 +96,10 @@ exclude_patterns:
   # (react-doctor, ServiceStack, tweakcc sujos; omarchy com commit nao enviado).
   # Se voltar a existir trabalho local em algum, commite: aqui ele nao viaja.
   - /home/opik/work/repos/references
+  # Jogos de console: 258 GB que entraram de uma vez em 23/10/2026 e fizeram o
+  # backup seguinte estourar as 6 h do serviço ainda subindo para o Hetzner.
+  # Jogo se baixa de novo; o que importa (saves) fica no console ou na nuvem.
+  - /home/opik/Games/PS5
   # Saida de build do .NET. O segmento Debug/Release e o que torna isto seguro:
   # exclui `bin/Debug` sem tocar num `bin/` qualquer que tenha script de verdade.
   - '**/bin/Debug'
