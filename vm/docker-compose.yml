@@ -36,10 +36,27 @@ services:
       - "127.0.0.1:${EZOMAR_VM_VNC_PORT:-5901}:5900"  # VNC direto, se preferir Remmina
       - "127.0.0.1:${EZOMAR_VM_SSH_PORT:-2223}:22"    # ssh para o guest, usado pelo vm-test.sh
     volumes:
-      - "${EZOMAR_VM_ISO:?defina EZOMAR_VM_ISO ou use vm/up.sh}:/boot.iso:ro"
+      # Sem :ro de propósito: desde o QEMU 11 o qemux liga o ISO como pendrive
+      # USB (usb-storage), que abre o arquivo para escrita e morre com
+      # "Read-only file system" se o bind for somente leitura (24/10/2026).
+      - "${EZOMAR_VM_ISO:?defina EZOMAR_VM_ISO ou use vm/up.sh}:/boot.iso"
       - "${EZOMAR_VM_STORAGE:-./storage}:/storage"
     # Sem restart automático de propósito. A VM anterior desta máquina ficou
     # dois dias de pé segurando 8G e as portas, parada no instalador, porque
     # subia sozinha a cada boot. Um ensaio é transitório; suba quando for usar.
     restart: "no"
     stop_grace_period: 2m
+
+# Sub-rede fixa e fora do que a tailnet anuncia. A tailnet da Exato publica
+# rotas para 172.16/172.20/172.21/172.22/172.30, e o Tailscale consulta essas
+# rotas (tabela 52) antes da tabela main. Com a sub-rede automática do Docker
+# (172.21.0.0/16 em 24/10/2026), tudo que ia do host para a VM, e da VM para a
+# internet, entrava no túnel e sumia: viewer mudo, ssh recusado, VM sem rede.
+# Tem de ficar dentro de 172.16.0.0/12: é a faixa que o ufw do Omarchy deixa
+# falar com o DNS dos containers (systemd-resolved em 172.17.0.1).
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: "${EZOMAR_VM_SUBNET:-172.31.237.0/24}"
+
