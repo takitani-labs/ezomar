@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Liga o microfone antes de gravar, e só então chama o voxtype.
+# Liga o microfone antes de gravar, escolhe onde transcrever, e só então chama
+# o voxtype.
 #
 #   voxtype-dictate start    (F9 apertado)
 #   voxtype-dictate stop     (F9 solto)
@@ -15,23 +16,76 @@ set -uo pipefail
 # (PipeWire e ALSA) de uma vez. Já aconteceu quatro vezes. Em vez de lembrar de
 # conferir, o atalho confere sozinho.
 #
-# Caminho rápido de propósito: quando já está ligado não faz nada, para não
-# atrasar o começo da gravação e cortar a primeira palavra.
+# Kage primeiro, local de reserva. A GPU do kage transcreve 25 s de fala em
+# 0,5 s; a CPU daqui leva uns 5 s. Mas com o voxtype só em modo remoto, o kage
+# fora do ar (aconteceu: 6 dias desligado em out/2026) deixa o F9 gravando e não
+# transcrevendo nada. O voxtype não tem fallback próprio, então a escolha é
+# feita aqui: se o remote_endpoint do config responde, modo remoto; se não,
+# local. O modo só muda quando a resposta muda, e mudar exige reiniciar o daemon
+# (meio segundo), então o caso comum não paga nada além de um curl em localhost.
+#
+# Caminho rápido de propósito: quando o microfone já está ligado e o modo já é o
+# certo, não faz nada, para não atrasar o começo da gravação e cortar a primeira
+# palavra.
+#
+# Botão:
+#   EZOMAR_VOXTYPE_PROBE_TIMEOUT   segundos para o remoto responder (padrão 0.3)
 
 MIC="${EZOMAR_MIC_BIN:-$HOME/.local/bin/mic}"
+PROBE_TIMEOUT="${EZOMAR_VOXTYPE_PROBE_TIMEOUT:-0.3}"
+
+# O F9 solto chega enquanto o start ainda pode estar reiniciando o daemon. Sem
+# esta trava, o stop cai no daemon parado e se perde, e a gravação que começa
+# logo depois só termina no limite de duração. O stop espera o start terminar.
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/voxtype-dictate.lock"
+exec 9>"$LOCK"
+
+# Remoto se houver endpoint configurado e ele responder agora; senão local.
+# Pelo túnel ssh a porta local some quando o kage cai; quando o túnel ainda não
+# percebeu a queda, a porta existe mas não responde, e o timeout cobre.
+wanted_mode() {
+  local endpoint
+  endpoint="$(voxtype config get whisper.remote_endpoint 2>/dev/null)"
+  # Chave ausente sai como "null", não como vazio.
+  if [ -n "$endpoint" ] && [ "$endpoint" != null ] && curl -s -o /dev/null -m "$PROBE_TIMEOUT" "$endpoint/"; then
+    echo remote
+  else
+    echo local
+  fi
+}
+
+ensure_mode() {
+  local want current
+  want="$(wanted_mode)"
+  current="$(voxtype config get whisper.mode 2>/dev/null)"
+  [ "$want" = "$current" ] && return 0
+  # Reiniciar com o daemon transcrevendo a fala anterior jogaria ela fora.
+  # Fica no modo atual desta vez; o próximo F9 troca.
+  [ "$(voxtype status 2>/dev/null)" = idle ] || return 0
+  voxtype config set whisper.mode "$want" >/dev/null 2>&1 || return 0
+  systemctl --user restart voxtype >/dev/null 2>&1 || return 0
+  # Pronto quando o status volta a idle (no local inclui carregar o modelo).
+  for _ in $(seq 1 50); do
+    [ "$(voxtype status 2>/dev/null)" = idle ] && return 0
+    sleep 0.1
+  done
+}
 
 case "${1:-start}" in
   start)
+    flock 9
     if [ -x "$MIC" ]; then
       # `mic status` não mexe em nada; só ligamos se estiver realmente mudo.
       if "$MIC" status 2>/dev/null | grep -q "não está passando som"; then
         "$MIC" on >/dev/null 2>&1
       fi
     fi
-    exec voxtype record start
+    ensure_mode
+    voxtype record start 9>&-
     ;;
   stop)
-    exec voxtype record stop
+    flock 9
+    voxtype record stop 9>&-
     ;;
   *)
     echo "uso: $(basename "$0") [start|stop]" >&2

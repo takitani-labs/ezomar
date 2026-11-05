@@ -1,32 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ditado em português, e microfone ligado antes de gravar.
+# Ditado em português, microfone ligado antes de gravar, e transcrição no kage
+# com a CPU daqui de reserva.
 #
-# Duas coisas que o padrão do Omarchy não cobre nesta máquina.
+# Três coisas que o padrão do Omarchy não cobre nesta máquina.
 #
 # 1. O modelo de fábrica é `base.en`, que é SÓ inglês. Modelo com sufixo `.en`
 #    não transcreve português de jeito nenhum, então o ditado nasce inútil para
-#    quem fala português. Aqui baixamos o `small`, que é o menor multilíngue com
-#    qualidade decente, e fixamos `language = pt`.
+#    quem fala português. Aqui baixamos o `large-v3-turbo` e fixamos
+#    `language = pt`. Medido em 27/10/2026 no Ryzen 9 9950X, 25 s de fala:
+#    `small` 2,8 s, `large-v3-turbo` 5,8 s com uma thread por núcleo físico
+#    (10 s na detecção automática, que usa poucas). O `small` erra mais em
+#    português; com o kage atendendo quase sempre, o local é reserva e vale
+#    mais acertar do que ganhar 3 s.
 #
 # 2. O atalho de fábrica chama `voxtype record start` direto. Pedir áudio de um
 #    microfone mudo não dá erro, dá silêncio, e o Whisper diante de silêncio
 #    alucina: escreve "you" para tudo. O sintoma parece falha de reconhecimento
 #    e é microfone cortado. O `voxtype-dictate` liga antes de gravar.
 #
+# 3. O `voxtype-dictate` também escolhe onde transcrever a cada F9: no
+#    remote_endpoint do config se ele responder (o whisper.cpp na GPU do kage,
+#    pelo túnel do kage-ollama-tunnel, 0,5 s para os mesmos 25 s), senão aqui.
+#    O endpoint fica configurado mesmo quando o kage não existe: aí a sonda
+#    falha na hora e o ditado segue local.
+#
 # O bind do F9 fica no bindings.lua do chezmoi, não aqui: é configuração do
 # Hyprland e precisa de `hl.unbind` antes, para sobrescrever o padrão.
 #
 # Botões:
-#   EZOMAR_VOXTYPE_MODEL     padrão small
+#   EZOMAR_VOXTYPE_MODEL     padrão large-v3-turbo
 #   EZOMAR_VOXTYPE_LANGUAGE  padrão pt
+#   EZOMAR_VOXTYPE_REMOTE    padrão http://127.0.0.1:8178 (vazio: só local)
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TPL="$SCRIPT_DIR/../templates/voxtype"
 BIN_DIR="$HOME/.local/bin"
-MODEL="${EZOMAR_VOXTYPE_MODEL:-small}"
+MODEL="${EZOMAR_VOXTYPE_MODEL:-large-v3-turbo}"
 LANGUAGE="${EZOMAR_VOXTYPE_LANGUAGE:-pt}"
+REMOTE="${EZOMAR_VOXTYPE_REMOTE-http://127.0.0.1:8178}"
 MODEL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/voxtype/models"
 
 say() { echo "[ezomar][voxtype] $*"; }
@@ -39,6 +52,26 @@ if ! command -v voxtype >/dev/null 2>&1; then
   say "voxtype não encontrado; o resto depende dele. Pulando."
   exit 0
 fi
+
+# Núcleos físicos, não threads: o SMT não acelera o whisper.cpp e só disputa
+# com o resto da máquina.
+cores="$(lscpu -p=CORE,SOCKET 2>/dev/null | grep -v '^#' | sort -u | wc -l)"
+[ "$cores" -gt 0 ] 2>/dev/null || cores="$(nproc)"
+
+# Tudo que não depende do modelo local vem antes do download. Se o download
+# falhar, o ditado ainda funciona pelo kage; antes, uma falha aqui saía sem
+# configurar o remoto e deixava o F9 no base.en mesmo com o kage no ar.
+voxtype config set whisper.language "$LANGUAGE" >/dev/null 2>&1 || true
+voxtype config set whisper.threads "$cores" >/dev/null 2>&1 || true
+if [ -n "$REMOTE" ]; then
+  voxtype config set whisper.remote_endpoint "$REMOTE" >/dev/null 2>&1 || true
+  voxtype config set whisper.remote_model "$MODEL" >/dev/null 2>&1 || true
+else
+  voxtype config unset whisper.remote_endpoint >/dev/null 2>&1 || true
+fi
+# Começa local; o voxtype-dictate passa para remoto no primeiro F9 em que o
+# endpoint responder.
+voxtype config set whisper.mode local >/dev/null 2>&1 || true
 
 # O download oficial (`voxtype setup model`) é interativo e não serve em
 # instalação automatizada. Os modelos são ggml padrão, então buscamos o arquivo
@@ -54,12 +87,10 @@ else
     say "Modelo $MODEL pronto."
   else
     rm -f "$MODEL_DIR/ggml-$MODEL.bin.part"
-    say "Não consegui baixar o modelo $MODEL; o ditado segue em inglês." >&2
-    exit 0
+    say "Não consegui baixar o modelo $MODEL; o local fica com '$(voxtype config get whisper.model 2>/dev/null)'. Rode de novo para tentar." >&2
   fi
 fi
+[ -f "$MODEL_DIR/ggml-$MODEL.bin" ] && voxtype config set whisper.model "$MODEL" >/dev/null 2>&1
 
-voxtype config set whisper.model "$MODEL" >/dev/null 2>&1 || true
-voxtype config set whisper.language "$LANGUAGE" >/dev/null 2>&1 || true
 systemctl --user restart voxtype >/dev/null 2>&1 || true
-say "Ditado em '$LANGUAGE' com o modelo '$MODEL'."
+say "Ditado em '$LANGUAGE', local '$(voxtype config get whisper.model 2>/dev/null)' ($cores threads), remoto: ${REMOTE:-nenhum}."
