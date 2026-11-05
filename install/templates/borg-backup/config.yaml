@@ -96,10 +96,26 @@ exclude_patterns:
   # (react-doctor, ServiceStack, tweakcc sujos; omarchy com commit nao enviado).
   # Se voltar a existir trabalho local em algum, commite: aqui ele nao viaja.
   - /home/opik/work/repos/references
-  # Jogos de console: 258 GB que entraram de uma vez em 23/10/2026 e fizeram o
-  # backup seguinte estourar as 6 h do serviço ainda subindo para o Hetzner.
-  # Jogo se baixa de novo; o que importa (saves) fica no console ou na nuvem.
-  - /home/opik/Games/PS5
+  # Jogos e downloads inteiros, não por nome. Primeiro foram 258 GB em
+  # ~/Games/PS5 (23/10/2026), depois 200 GB de dumps em ~/Downloads (27-29/10),
+  # depois mais 300 GB com outros nomes, em ~/Games/SW2 e num .crdownload de
+  # 85 GB (30-31/10). Cada leva estourou as 6 h do serviço subindo para o
+  # Hetzner, e excluir por padrão de nome sempre chegava atrasado. Jogo se
+  # baixa de novo e os saves ficam no console ou na nuvem; ~/Downloads é área
+  # de passagem, e o que importa sai de lá para uma pasta de verdade.
+  - /home/opik/Games
+  - /home/opik/Downloads
+  # Download do Chrome pela metade: inútil para restaurar, e pode ter dezenas
+  # de GB, onde quer que o Chrome esteja salvando.
+  - '**/*.crdownload'
+  # Banco do opencode de cada lane de scraping do mantis: 573 lanes, 100 GB em
+  # 01/11/2026, quase tudo histórico de sessão de agente descartável. O que a
+  # lane produz vai para o repositório do mantis, não fica aqui; o resto do
+  # diretório (alvos .jsonl, mise, atuin) é pequeno e continua no backup.
+  - /home/opik/.local/share/mantis-lanes/*/*/opencode
+  # Disco da VM de ensaio do ezomar (14 GB). Muda a cada boot, então cada
+  # backup subiria tudo de novo, e a VM se recria com o próprio ezomar.
+  - /home/opik/work/repos/takitani-labs/ezomar/vm/storage
   # Saida de build do .NET. O segmento Debug/Release e o que torna isto seguro:
   # exclui `bin/Debug` sem tocar num `bin/` qualquer que tenha script de verdade.
   - '**/bin/Debug'
