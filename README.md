@@ -77,6 +77,7 @@ Rodam em ordem de nome, e a numeração importa.
 | `35-shell.sh` | `chsh` para zsh, depois do chezmoi ter entregue o `.zshrc` |
 | `40-claude-plugins.sh` | marketplaces e os 10 plugins do Claude Code |
 | `43-agents-mcp.sh` | registra o MCP `chrome-devtools` (Chrome do dia a dia via CDP) no Codex, Gemini, Grok, pi, Copilot e opencode; o 42 cobre o Claude |
+| `44-claude-desktop.sh` | instala o Claude Desktop (chat, Cowork e Claude Code) pelo `claude-desktop` do AUR, que reempacota o .deb oficial da Anthropic |
 | `45-webapps.sh` | remove os web apps que o Omarchy instala e esta máquina não usa |
 | `46-flea.sh` | instala o Flea da release do GitHub (`flea-bin`) e o torna o gerenciador de arquivos padrão (pastas, diálogos de arquivo, Super+Shift+F) |
 | `48-ff.sh` | instala o `ff`, busca de arquivos estilo Everything (plocate + fd ao vivo + fzf), no Super+Shift+Espaço |
