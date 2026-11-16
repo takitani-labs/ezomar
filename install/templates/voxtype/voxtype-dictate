@@ -5,6 +5,7 @@ set -uo pipefail
 #
 #   voxtype-dictate start    (F9 apertado)
 #   voxtype-dictate stop     (F9 solto)
+#   voxtype-dictate toggle   (botão de um toque: grava, e no próximo transcreve)
 #
 # Pedir áudio de um microfone mudo não dá erro: dá silêncio. E o Whisper, diante
 # de silêncio, alucina — ele escreve "you". Foi o que aconteceu aqui: o ditado
@@ -37,8 +38,18 @@ case "${1:-start}" in
   stop)
     exec voxtype record stop
     ;;
+  toggle)
+    # Para botão que só manda um toque, sem soltar depois (os botões grandes
+    # do 8BitDo programados pelo Fast Key Mapping): um toque grava, outro
+    # transcreve. O microfone só é conferido na hora de começar.
+    if [ "$(voxtype status 2>/dev/null)" = idle ] && [ -x "$MIC" ] \
+        && "$MIC" status 2>/dev/null | grep -q "não está passando som"; then
+      "$MIC" on >/dev/null 2>&1
+    fi
+    exec voxtype record toggle
+    ;;
   *)
-    echo "uso: $(basename "$0") [start|stop]" >&2
+    echo "uso: $(basename "$0") [start|stop|toggle]" >&2
     exit 2
     ;;
 esac
