@@ -1,0 +1,11 @@
+[Unit]
+Description=Disconnect idle Bluetooth headsets so they power off
+After=pipewire.service wireplumber.service
+
+[Service]
+ExecStart=%h/.local/bin/bt-idle-off
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

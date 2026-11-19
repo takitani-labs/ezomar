@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Desconecta o fone Bluetooth depois de um tempo sem som, para ele desligar.
+#
+# Fone Bluetooth comum só se desliga sozinho quando fica SEM conexão. Ligado a
+# um PC, fica aceso para sempre: o PipeWire suspende a saída após uns segundos
+# de silêncio, mas o link Bluetooth continua de pé e o fone acha que está em uso.
+# O QCY H3 tem um "desligamento programado" no firmware (comando 0x14 do RCSP da
+# JieLi, lido em 19/11/2026), mas é timer de sono: desliga X minutos depois de
+# ligar, tocando ou não. Não serve para "desligar quando parar de usar".
+#
+# Então quem decide é o PC: a cada minuto este laço olha as saídas e entradas
+# Bluetooth no PipeWire. Se nenhuma estiver tocando (estado RUNNING) por
+# EZOMAR_BT_IDLE_MIN minutos, desconecta o aparelho. Sem conexão, o fone entra
+# no próprio desligamento. Para usar de novo, liga o fone e ele reconecta.
+#
+# O microfone conta como uso: em chamada pelo perfil HFP a entrada fica RUNNING
+# mesmo com a saída em silêncio. Um app que segura a saída aberta em silêncio
+# (algumas abas de reunião) também conta como uso, e aí o fone fica conectado.
+#
+# Botão:
+#   EZOMAR_BT_IDLE_MIN   minutos sem som antes de desconectar (padrão 20)
+
+IDLE_MIN="${EZOMAR_BT_IDLE_MIN:-20}"
+declare -A idle_since=()
+
+mac_of() {
+  # bluez_output.84_AC_60_03_A8_D4.1 / bluez_input.84:AC:60:03:A8:D4 -> 84:AC:60:03:A8:D4
+  local m="${1#bluez_output.}"
+  m="${m#bluez_input.}"
+  m="${m%%.*}"
+  echo "${m//_/:}"
+}
+
+while true; do
+  now=$(date +%s)
+  declare -A busy=() seen=()
+  while read -r _ name _ _ state; do
+    case "$name" in bluez_output.*.monitor) continue ;; bluez_*) ;; *) continue ;; esac
+    mac="$(mac_of "$name")"
+    seen[$mac]=1
+    [ "$state" = RUNNING ] && busy[$mac]=1
+  done < <(pactl list sinks short 2>/dev/null; pactl list sources short 2>/dev/null)
+
+  for mac in "${!seen[@]}"; do
+    if [ -n "${busy[$mac]:-}" ]; then
+      unset "idle_since[$mac]"
+    elif [ -z "${idle_since[$mac]:-}" ]; then
+      idle_since[$mac]=$now
+    elif [ $((now - idle_since[$mac])) -ge $((IDLE_MIN * 60)) ]; then
+      echo "[bt-idle-off] $mac sem som há $IDLE_MIN min; desconectando."
+      bluetoothctl disconnect "$mac" >/dev/null 2>&1
+      unset "idle_since[$mac]"
+    fi
+  done
+  # Aparelho que sumiu (desligado à mão) não carrega contagem velha.
+  for mac in "${!idle_since[@]}"; do
+    [ -n "${seen[$mac]:-}" ] || unset "idle_since[$mac]"
+  done
+  unset busy seen
+  sleep 60
+done
