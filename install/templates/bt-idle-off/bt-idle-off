@@ -36,7 +36,10 @@ mac_of() {
 while true; do
   now=$(date +%s)
   declare -A busy=() seen=()
-  while read -r _ name _ _ state; do
+  # As colunas do `pactl ... short` são separadas por TAB; a de formato tem
+  # espaços dentro ("s16le 2ch 48000Hz"). Separar por espaço jogava o estado
+  # junto do formato, nunca dava RUNNING, e o fone caía no meio do uso.
+  while IFS=$'\t' read -r _ name _ _ state; do
     case "$name" in bluez_output.*.monitor) continue ;; bluez_*) ;; *) continue ;; esac
     mac="$(mac_of "$name")"
     seen[$mac]=1
