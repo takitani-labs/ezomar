@@ -52,6 +52,17 @@ if have gemini; then
   fi
 fi
 
+# Antigravity (agy): grava em ~/.gemini/config/mcp_config.json; -- garante que
+# -y e --autoConnect cheguem ao npx em vez de serem lidos como flags do `add`.
+if have agy; then
+  if jq -e --arg n "$NAME" '.mcpServers[$n]' "$HOME/.gemini/config/mcp_config.json" >/dev/null 2>&1; then
+    say "antigravity: já registrado."
+  else
+    agy mcp add "$NAME" -- "${SERVER[@]}" >/dev/null
+    say "antigravity: registrado."
+  fi
+fi
+
 # Grok: o `add` também atualiza, mas o -- é obrigatório para o -y chegar ao npx.
 if have grok; then
   if grok mcp list 2>/dev/null | grep -q "$NAME"; then
